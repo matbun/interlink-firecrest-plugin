@@ -1,0 +1,9 @@
+# Bridge configuration for the kind test. The kind node is attached to the
+# FirecREST demo network, so pods reach it by its fixed addresses. The client
+# secret comes from FIRECREST_CLIENT_SECRET.
+FirecrestURL: http://192.168.240.10:5000
+System: cluster-slurm-ssh
+TokenURL: http://192.168.240.3:8080/auth/realms/kcrealm/protocol/openid-connect/token
+ClientID: firecrest-test-client
+JobRoot: /home/fireuser/interlink/jobs
+SyncInterval: 2s

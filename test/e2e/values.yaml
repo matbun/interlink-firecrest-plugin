@@ -1,0 +1,71 @@
+# interlink-helm-chart values for the kind test: virtual kubelet, interLink API
+# and the official slurm plugin in one pod. kustomization.yaml adds the bridge.
+nodeName: firecrest-node
+
+interlink:
+  enabled: true
+  image: ghcr.io/interlink-hq/interlink/interlink:0.6.3-pre2
+  address: http://localhost
+  port: 3000
+  logging:
+    verboseLogging: true
+
+virtualNode:
+  image: ghcr.io/interlink-hq/interlink/virtual-kubelet-inttw:0.6.3-pre2
+  resources:
+    CPUs: 2
+    memGiB: 1
+    pods: 10
+
+plugin:
+  enabled: true
+  image: ghcr.io/interlink-hq/interlink-sidecar-slurm/interlink-sidecar-slurm:0.6.3-pre2
+  command: ["/sidecar/slurm-sidecar"]
+  address: http://localhost
+  port: 4000
+  envs:
+    - name: SLURMCONFIGPATH
+      value: /etc/interlink/plugin.yaml
+    - name: SHARED_FS
+      value: "true"
+  extraVolumeMounts:
+    - name: jobs
+      mountPath: /home/fireuser/interlink/jobs
+    - name: bridge-socket
+      mountPath: /var/run/firecrest-bridge
+    - name: bridge-shims
+      mountPath: /opt/firecrest-bridge
+      readOnly: true
+  config: |
+    SidecarPort: "4000"
+    Socket: ""
+    SbatchPath: /opt/firecrest-bridge/sbatch
+    ScancelPath: /opt/firecrest-bridge/scancel
+    SqueuePath: /opt/firecrest-bridge/squeue
+    SinfoPath: /opt/firecrest-bridge/sinfo
+    ImagePrefix: "docker://"
+    SingularityPath: singularity
+    ExportPodData: true
+    DataRootFolder: /home/fireuser/interlink/jobs/
+    Namespace: vk
+    BashPath: /bin/bash
+    VerboseLogging: true
+    ContainerRuntime: singularity
+    EnableProbes: true
+    DefaultFlavor: demo
+    Flavors:
+      demo:
+        Name: demo
+        Description: FirecREST demo cluster
+        CPUDefault: 1
+        MemoryDefault: 400M
+        SlurmFlags:
+          - --partition=part01
+
+extraVolumes:
+  - name: jobs
+    emptyDir: {}
+  - name: bridge-socket
+    emptyDir: {}
+  - name: bridge-shims
+    emptyDir: {}
