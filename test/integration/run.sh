@@ -28,12 +28,12 @@ up() {
 		git clone -q https://github.com/eth-cscs/firecrest-v2 "$F7T_DIR"
 	fi
 	git -C "$F7T_DIR" checkout -q "$F7T_REF"
-	if ! docker image inspect slurm >/dev/null 2>&1; then
-		(cd "$F7T_DIR" && docker compose -p f7t -f docker-compose.yml build slurm)
-	fi
+	# Build FirecREST's images without the overlay: with it, compose would build
+	# the stock demo cluster under the overlay's image name.
+	(cd "$F7T_DIR" && docker compose -p f7t -f docker-compose.yml build firecrest slurm ssh-ca)
 	docker build -q -t firecrest-bridge-test/slurm-apptainer:latest "$HERE/slurm-apptainer" >/dev/null
 	# MinIO (S3 transfers) and PBS are not needed.
-	f7t up -d --build firecrest slurm keycloak keycloak-create-user ssh-ca
+	f7t up -d --no-build firecrest slurm keycloak keycloak-create-user ssh-ca
 	echo "waiting for FirecREST"
 	for _ in $(seq 1 90); do
 		code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8000/status/systems || true)
@@ -219,7 +219,11 @@ case "${1:-all}" in
 up) up ;;
 test) test_all ;;
 down) down ;;
-all) up && test_all ;;
+all)
+	# Not "up && test_all": errexit does not apply inside a function on the left of &&.
+	up
+	test_all
+	;;
 *)
 	echo "usage: $0 [up|test|down]" >&2
 	exit 2

@@ -124,7 +124,11 @@ case "${1:-all}" in
 up) up ;;
 test) test_all ;;
 down) kind delete cluster --name "$CLUSTER" ;;
-all) up && test_all ;;
+all)
+	# Not "up && test_all": errexit does not apply inside a function on the left of &&.
+	up
+	test_all
+	;;
 *)
 	echo "usage: $0 [up|test|down]" >&2
 	exit 2
