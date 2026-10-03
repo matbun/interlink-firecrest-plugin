@@ -215,12 +215,23 @@ func (b *Bridge) scancel(ctx context.Context, args []string) Result {
 		if strings.HasPrefix(a, "-") {
 			return fail("scancel: error: option %q is not supported by firecrest-bridge", a)
 		}
-		if err := b.remote.CancelJob(ctx, a); err != nil && !firecrest.IsNotFound(err) {
+		if err := b.remote.CancelJob(ctx, a); err != nil && !firecrest.IsNotFound(err) && !b.finished(ctx, a) {
 			return fail("scancel: error: %v", err)
 		}
 		b.log.Info("cancelled", "job", a)
 	}
 	return ok("")
+}
+
+// finished reports whether a job is gone or already in a terminal state. Slurm's
+// scancel exits 0 for those, but prints a warning that FirecREST turns into an
+// error.
+func (b *Bridge) finished(ctx context.Context, id string) bool {
+	j, err := b.remote.GetJob(ctx, id)
+	if firecrest.IsNotFound(err) {
+		return true
+	}
+	return err == nil && isTerminal(compactState(j.Status.State))
 }
 
 // sinfo answers `sinfo --json`, `sinfo --noheader -N --format=...` and `sinfo -s`.

@@ -116,6 +116,11 @@ func (f *fakeRemote) CancelJob(_ context.Context, id string) error {
 	if !ok {
 		return notFound("/compute/sys/jobs/" + id)
 	}
+	// What FirecREST 2.6 answers, because scancel prints this on stderr.
+	if isTerminal(compactState(j.Status.State)) {
+		return &firecrest.APIError{Method: "DELETE", Path: "/compute/sys/jobs/" + id, Status: http.StatusInternalServerError,
+			Body: `{"message":"Unexpected Slurm command response. exit_status:0 std_err:scancel: error: Kill job error on job id ` + id + `: Job/step already completing or completed\n"}`}
+	}
 	j.Status = firecrest.JobStatus{State: "CANCELLED by 1001"}
 	return nil
 }

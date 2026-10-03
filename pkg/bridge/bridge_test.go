@@ -343,6 +343,16 @@ func TestScancelUnknownJobIsSilent(t *testing.T) {
 	}
 }
 
+// Real scancel exits 0 for a finished job; FirecREST turns its stderr into a 500.
+func TestScancelFinishedJobSucceedsLikeSlurm(t *testing.T) {
+	f := newFixture(t)
+	id := f.submit(f.podDir("ns-uid1"))
+	f.remote.setState(id, "COMPLETED", 0, 0)
+	if res := f.b.Exec(context.Background(), "scancel", []string{id}); res.Code != 0 || res.Stderr != "" {
+		t.Fatalf("got %+v", res)
+	}
+}
+
 func TestSinfoFormats(t *testing.T) {
 	f := newFixture(t)
 
