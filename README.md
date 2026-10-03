@@ -26,11 +26,13 @@ virtual kubelet -> interLink API -> slurm plugin (official image, unchanged)
 - **Staging.** `sbatch <dir>/job.slurm` uploads the job directory the plugin
   wrote (scripts, env files, volume content, empty dirs) to the same absolute
   path on the cluster, then submits the script.
-- **Pulling back.** Every `SyncInterval` the daemon pulls what running jobs
-  write: logs (only the new tail), container status files, probe files and
-  `compute-node`. Files are written in place, so a followed log keeps
-  streaming. A terminal state is reported only after a final pull, so the
-  plugin finds the container exit codes. Pending jobs are not polled.
+- **Pulling back.** Every `SyncInterval` the daemon pulls the files the plugin
+  reads from running jobs: logs (only the new tail), container and probe
+  status files, and `compute-node`. Anything else the job leaves in its
+  directory, such as an imported enroot image, stays on the cluster. Files are
+  written in place, so a followed log keeps streaming. A terminal state is
+  reported only after a final pull, so the plugin finds the container exit
+  codes. Pending jobs are not polled.
 - **Cleanup.** When the plugin removes a job directory, the bridge removes the
   remote copy. Nothing outside `JobRoot` is ever removed, and nothing at all
   while `JobRoot` itself is missing.
@@ -42,9 +44,10 @@ virtual kubelet -> interLink API -> slurm plugin (official image, unchanged)
 Tested against FirecREST's own demo stack (FirecREST 2.6, Slurm 24.11, Keycloak)
 with the official slurm plugin `0.6.3-pre2` and interLink `0.6.3-pre2`:
 
-- `test/integration/run.sh`, 27 checks: create, status, `nodeName`, logs,
+- `test/integration/run.sh`, 33 checks: create, status, `nodeName`, logs,
   followed logs across a bridge restart, exit codes, ConfigMap, env and
-  emptyDir volumes, delete of finished and running jobs with remote cleanup.
+  emptyDir volumes, delete of finished and running jobs with remote cleanup,
+  and the same flow with the enroot runtime (Apptainer otherwise).
 - `test/e2e/run.sh`, 10 checks: a pod applied with `kubectl` to the virtual
   node in kind runs on the FirecREST cluster; `kubectl logs` and
   `kubectl delete` work.
@@ -64,8 +67,8 @@ test/e2e/run.sh down; test/integration/run.sh down
 ```
 
 `test/integration/run.sh` clones `eth-cscs/firecrest-v2` at a pinned commit
-into `~/.cache/firecrest-bridge`, adds Apptainer to its demo Slurm node, and
-leaves out MinIO and PBS (not needed). The kind test uses
+into `~/.cache/firecrest-bridge`, adds Apptainer and enroot to its demo Slurm
+node, and leaves out MinIO and PBS (not needed). The kind test uses
 `kindest/node:v1.34.3`, the last image whose kubelet starts on cgroup v1 hosts.
 
 ## Deploying
@@ -134,5 +137,8 @@ These can also come from the environment (`FIRECREST_URL`,
 - **Logs lag** by up to `SyncInterval`.
 - **One identity.** Every job runs as the owner of the FirecREST client.
 - The `slurm-job.vk.io/job-workdir` annotation must point below `JobRoot`.
+- With `ContainerRuntime: enroot`, the slurm plugin (`0.6.3-pre2`) mounts the
+  env file over `/etc/environment`, which enroot 4.2 does not load: pod env
+  vars do not reach the container. A plugin issue, independent of the bridge.
 - Only the `squeue`, `sinfo` and `scancel` invocations the plugin makes are
   emulated.
