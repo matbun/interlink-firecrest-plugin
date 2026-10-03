@@ -105,16 +105,33 @@ func drain(ch <-chan error) []error {
 	return out
 }
 
-// listFiles returns the regular files below dir on the cluster, keyed by their
-// path relative to dir.
+// pluginReads reports whether the slurm plugin reads a file of this name back
+// from a job directory: job and container logs (*.out), container and probe
+// status files (*.status, *.timestamp), and compute-node. Everything else the
+// job leaves there, such as the images the enroot runtime imports, stays remote.
+func pluginReads(name string) bool {
+	if strings.Contains(name, "/") {
+		return false
+	}
+	switch {
+	case name == "compute-node",
+		strings.HasSuffix(name, ".out"),
+		strings.HasSuffix(name, ".status"),
+		strings.HasSuffix(name, ".timestamp"):
+		return true
+	}
+	return false
+}
+
+// listFiles returns the files in dir on the cluster that the plugin reads.
 func (b *Bridge) listFiles(ctx context.Context, dir string) (map[string]fileMeta, error) {
-	entries, err := b.remote.Ls(ctx, dir, true)
+	entries, err := b.remote.Ls(ctx, dir, false)
 	if err != nil {
 		return nil, err
 	}
 	out := make(map[string]fileMeta, len(entries))
 	for _, e := range entries {
-		if e.Type != "-" {
+		if e.Type != "-" || !pluginReads(e.Name) {
 			continue
 		}
 		out[e.Name] = fileMeta{size: e.Size.Int64(), mtime: e.LastModified}
@@ -180,40 +197,25 @@ func (b *Bridge) finalSync(ctx context.Context, id string) {
 	j.terminal = true
 }
 
-// pull copies every remote file that changed since the last pull into the
-// local directory. Files are written in place, never replaced, so the plugin
-// can keep following a log through an open descriptor. Callers hold j.mu.
+// pull copies the files the plugin reads that changed since the last pull into
+// the local directory. Files are written in place, never replaced, so the
+// plugin can keep following a log through an open descriptor. Callers hold j.mu.
 func (b *Bridge) pull(ctx context.Context, j *job) error {
-	entries, err := b.remote.Ls(ctx, j.dir, true)
+	files, err := b.listFiles(ctx, j.dir)
 	if err != nil {
 		return err
 	}
 	var errs []error
-	for _, e := range entries {
-		rel := filepath.Clean(e.Name)
-		if rel == "." || filepath.IsAbs(rel) || rel == ".." || strings.HasPrefix(rel, "../") {
+	for name, meta := range files {
+		if old, ok := j.seen[name]; ok && old == meta {
 			continue
 		}
-		local := filepath.Join(j.dir, rel)
-		switch e.Type {
-		case "d":
-			if err := os.MkdirAll(local, 0o755); err != nil {
-				errs = append(errs, err)
-			}
-			continue
-		case "-":
-		default:
+		path := filepath.Join(j.dir, name)
+		if err := b.fetch(ctx, path, path, meta.size); err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", name, err))
 			continue
 		}
-		meta := fileMeta{size: e.Size.Int64(), mtime: e.LastModified}
-		if old, ok := j.seen[rel]; ok && old == meta {
-			continue
-		}
-		if err := b.fetch(ctx, filepath.Join(j.dir, rel), local, meta.size); err != nil {
-			errs = append(errs, fmt.Errorf("%s: %w", rel, err))
-			continue
-		}
-		j.seen[rel] = meta
+		j.seen[name] = meta
 	}
 	return errors.Join(errs...)
 }

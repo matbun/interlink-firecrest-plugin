@@ -272,6 +272,36 @@ func TestPullFetchesLogTailsAndRewritesSmallFiles(t *testing.T) {
 	}
 }
 
+// The enroot runtime imports images into the job directory: only the files the
+// plugin reads come back.
+func TestPullOnlyFetchesWhatThePluginReads(t *testing.T) {
+	f := newFixture(t)
+	dir := f.podDir("ns-uid1")
+	f.running(f.submit(dir))
+	f.remote.write(dir+"/mainns-uid1.sqsh", strings.Repeat("\x00", 1<<20))
+	f.remote.write(dir+"/slurm-1.err", "noise\n")
+	f.remote.write(dir+"/sub/run-x.out", "nested\n")
+	f.remote.write(dir+"/readiness-probe-main-0.timestamp", "1790956027\n")
+	f.remote.write(dir+"/init-setup.out", "init\n")
+	f.b.SyncAll(context.Background())
+
+	for _, rel := range []string{"mainns-uid1.sqsh", "slurm-1.err", "sub/run-x.out"} {
+		if _, err := os.Stat(filepath.Join(dir, rel)); err == nil {
+			t.Errorf("%s pulled", rel)
+		}
+	}
+	for _, rel := range []string{"readiness-probe-main-0.timestamp", "init-setup.out"} {
+		if _, err := os.Stat(filepath.Join(dir, rel)); err != nil {
+			t.Errorf("%s not pulled", rel)
+		}
+	}
+	for _, v := range f.remote.views {
+		if strings.HasSuffix(v.path, ".sqsh") {
+			t.Fatal("image file read through FirecREST")
+		}
+	}
+}
+
 // Jobs can queue for hours; a pending job writes nothing, so it is not listed.
 func TestPendingJobsAreNotPulled(t *testing.T) {
 	f := newFixture(t)
