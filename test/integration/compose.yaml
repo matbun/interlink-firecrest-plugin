@@ -40,6 +40,28 @@ services:
     networks:
       - firecrest
 
+  # The same plugin with the enroot runtime (as on Alps), through the same bridge.
+  plugin-enroot:
+    image: ${PLUGIN_IMAGE:-ghcr.io/interlink-hq/interlink-sidecar-slurm/interlink-sidecar-slurm:0.6.3-pre2}
+    entrypoint: ["/sidecar/slurm-sidecar"]
+    environment:
+      SLURMCONFIGPATH: /etc/interlink/SlurmConfig.yaml
+      SHARED_FS: "true"
+    depends_on:
+      shims:
+        condition: service_completed_successfully
+      bridge:
+        condition: service_started
+    volumes:
+      - ./SlurmConfig-enroot.yaml:/etc/interlink/SlurmConfig.yaml:ro
+      - jobs:/home/fireuser/interlink/jobs
+      - socket:/var/run/firecrest-bridge
+      - shims:/opt/firecrest-bridge:ro
+    ports:
+      - "127.0.0.1:${PLUGIN_ENROOT_PORT:-4001}:4000"
+    networks:
+      - firecrest
+
 volumes:
   shims:
   jobs:

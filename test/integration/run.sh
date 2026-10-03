@@ -13,6 +13,7 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 F7T_REF=${F7T_REF:-b474395}
 F7T_DIR=${F7T_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/firecrest-bridge/firecrest-v2}
 PLUGIN=${PLUGIN:-http://127.0.0.1:${PLUGIN_PORT:-4000}}
+PLUGIN_ENROOT=${PLUGIN_ENROOT:-http://127.0.0.1:${PLUGIN_ENROOT_PORT:-4001}}
 JOBROOT=/home/fireuser/interlink/jobs
 SLURM_CTR=f7t-slurm-1
 TMP=$(mktemp -d)
@@ -102,11 +103,44 @@ check() { # description, then a command
 		FAIL=$((FAIL + 1))
 	fi
 }
+# known reports a check that fails because of an upstream issue without failing the run.
+known() {
+	local what=$1
+	shift
+	if "$@"; then
+		echo "  ok   $what"
+		PASS=$((PASS + 1))
+	else
+		echo "  known $what"
+	fi
+}
 contains() { grep -qF -- "$2" <<<"$1"; }
 equals() { [ "$1" = "$2" ]; }
 
 cleanup_pods() {
 	for p in hello fail sleeper config ticker; do delete "$p" >/dev/null 2>&1 || true; done
+	PLUGIN=$PLUGIN_ENROOT delete enroot >/dev/null 2>&1 || true
+}
+
+# Same flow through the plugin instance configured with the enroot runtime.
+test_enroot() {
+	local PLUGIN=$PLUGIN_ENROOT out
+	scenario "enroot: the runtime Alps uses (enroot import/create/start in the job)"
+	create enroot >/dev/null
+	check "pod reaches terminated" wait_state enroot terminated 240
+	check "exit code 0" equals "$(exit_code enroot)" 0
+	out=$(logs enroot)
+	check "logs carry the container output" contains "$out" "enroot container alpine 3.20"
+	check "env file staged on the cluster" \
+		docker exec -u fireuser "$SLURM_CTR" grep -q DEMO_VAR=through-enroot "$(dir enroot)/main_envfile.properties"
+	# The plugin mounts the env file over /etc/environment, which enroot 4.2 does
+	# not load (enroot start --env does); not a bridge issue.
+	known "env var set in the container (slurm plugin enroot env handling)" contains "$out" "DEMO_VAR=through-enroot"
+	check "imported image is in the job directory on the cluster" \
+		docker exec -u fireuser "$SLURM_CTR" sh -c "ls $(dir enroot)/*.sqsh"
+	check "imported image is not pulled back to the plugin" \
+		compose exec -T bridge sh -c "! ls $(dir enroot)/*.sqsh 2>/dev/null"
+	delete enroot >/dev/null
 }
 
 scenario() { echo; echo "== $*"; }
@@ -173,6 +207,8 @@ test_all() {
 	sleep 5
 	check "Slurm job $jid cancelled" equals "$(job_state "$jid")" CA
 	check "remote job directory removed" bash -c "! docker exec -u fireuser $SLURM_CTR test -e $(dir sleeper)"
+
+	test_enroot
 
 	echo
 	echo "passed $PASS, failed $FAIL"
