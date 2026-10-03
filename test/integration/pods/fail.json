@@ -1,0 +1,22 @@
+{
+  "pod": {
+    "apiVersion": "v1",
+    "kind": "Pod",
+    "metadata": {
+      "name": "fail",
+      "namespace": "default",
+      "uid": "11111111-0000-4000-8000-000000000002"
+    },
+    "spec": {
+      "containers": [
+        {
+          "name": "main",
+          "image": "alpine:3.20",
+          "command": ["sh", "-c"],
+          "args": ["echo about to fail; exit 3"]
+        }
+      ]
+    }
+  },
+  "container": [{"name": "main"}]
+}

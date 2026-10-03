@@ -1,0 +1,6 @@
+# Overlay on firecrest-v2's docker-compose.yml: run the demo cluster with
+# Apptainer installed (see slurm-apptainer/Dockerfile).
+services:
+  slurm:
+    image: firecrest-bridge-test/slurm-apptainer:latest
+    pull_policy: never

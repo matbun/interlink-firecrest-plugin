@@ -1,0 +1,22 @@
+{
+  "pod": {
+    "apiVersion": "v1",
+    "kind": "Pod",
+    "metadata": {
+      "name": "hello",
+      "namespace": "default",
+      "uid": "11111111-0000-4000-8000-000000000001"
+    },
+    "spec": {
+      "containers": [
+        {
+          "name": "main",
+          "image": "alpine:3.20",
+          "command": ["sh", "-c"],
+          "args": ["echo hello from $(hostname) alpine $(cat /etc/alpine-release); for i in 1 2 3; do echo tick $i; sleep 2; done; echo done"]
+        }
+      ]
+    }
+  },
+  "container": [{"name": "main"}]
+}

@@ -1,0 +1,51 @@
+# The official interLink slurm plugin and the bridge, as they would run side by
+# side in one pod, attached to FirecREST's demo network.
+name: firecrest-bridge-test
+
+services:
+  shims:
+    image: ${BRIDGE_IMAGE:-firecrest-bridge:dev}
+    command: ["install-shims", "/opt/firecrest-bridge"]
+    volumes:
+      - shims:/opt/firecrest-bridge
+
+  bridge:
+    image: ${BRIDGE_IMAGE:-firecrest-bridge:dev}
+    command: ["daemon", "--config", "/etc/interlink/FirecrestConfig.yaml", "--verbose"]
+    volumes:
+      - ./FirecrestConfig.yaml:/etc/interlink/FirecrestConfig.yaml:ro
+      - jobs:/home/fireuser/interlink/jobs
+      - socket:/var/run/firecrest-bridge
+    networks:
+      - firecrest
+
+  plugin:
+    image: ${PLUGIN_IMAGE:-ghcr.io/interlink-hq/interlink-sidecar-slurm/interlink-sidecar-slurm:0.6.3-pre2}
+    entrypoint: ["/sidecar/slurm-sidecar"]
+    environment:
+      SLURMCONFIGPATH: /etc/interlink/SlurmConfig.yaml
+      SHARED_FS: "true"
+    depends_on:
+      shims:
+        condition: service_completed_successfully
+      bridge:
+        condition: service_started
+    volumes:
+      - ./SlurmConfig.yaml:/etc/interlink/SlurmConfig.yaml:ro
+      - jobs:/home/fireuser/interlink/jobs
+      - socket:/var/run/firecrest-bridge
+      - shims:/opt/firecrest-bridge:ro
+    ports:
+      - "127.0.0.1:${PLUGIN_PORT:-4000}:4000"
+    networks:
+      - firecrest
+
+volumes:
+  shims:
+  jobs:
+  socket:
+
+networks:
+  firecrest:
+    external: true
+    name: f7t_firecrest-internal-v2
