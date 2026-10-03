@@ -105,7 +105,7 @@ func (b *Bridge) sbatch(ctx context.Context, args []string) Result {
 	}
 
 	b.mu.Lock()
-	b.jobs[dir] = &job{dir: dir, id: id, seen: seen}
+	b.jobs[dir] = &job{dir: dir, id: id, seen: seen, state: "PD"}
 	b.mu.Unlock()
 	b.log.Info("submitted", "job", id, "dir", dir)
 	return ok(fmt.Sprintf("Submitted batch job %s\n", id))
@@ -175,6 +175,11 @@ func (b *Bridge) squeue(ctx context.Context, args []string) Result {
 			return fail("squeue: error: %v", err)
 		}
 		code := compactState(j.Status.State)
+		if tracked := b.lookup(id); tracked != nil {
+			tracked.mu.Lock()
+			tracked.state = code
+			tracked.mu.Unlock()
+		}
 		if isTerminal(code) {
 			b.finalSync(ctx, id)
 		}

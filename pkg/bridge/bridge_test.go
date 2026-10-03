@@ -84,6 +84,15 @@ func (f *fixture) submit(dir string) string {
 	return m[1]
 }
 
+// running marks a job running the way the plugin's status polling does.
+func (f *fixture) running(id string) {
+	f.t.Helper()
+	f.remote.setState(id, "RUNNING", 0, 0)
+	if res := f.b.Exec(context.Background(), "squeue", []string{"--noheader", "-O", "StateCompact", "-j", id}); res.Code != 0 {
+		f.t.Fatal(res.Stderr)
+	}
+}
+
 func readFile(t *testing.T, path string) string {
 	t.Helper()
 	b, err := os.ReadFile(path)
@@ -220,7 +229,7 @@ func TestTerminalStatePullsStatusFilesFirst(t *testing.T) {
 func TestPullFetchesLogTailsAndRewritesSmallFiles(t *testing.T) {
 	f := newFixture(t)
 	dir := f.podDir("ns-uid1")
-	f.submit(dir)
+	f.running(f.submit(dir))
 	log := strings.Repeat("x", smallFile+10)
 	f.remote.write(dir+"/run-ctn.out", log)
 	f.remote.write(dir+"/probe-ctn.status", "0\n")
@@ -263,10 +272,32 @@ func TestPullFetchesLogTailsAndRewritesSmallFiles(t *testing.T) {
 	}
 }
 
+// Jobs can queue for hours; a pending job writes nothing, so it is not listed.
+func TestPendingJobsAreNotPulled(t *testing.T) {
+	f := newFixture(t)
+	dir := f.podDir("ns-uid1")
+	id := f.submit(dir)
+	args := []string{"--noheader", "-O", "exit_code,StateCompact", "-j", id}
+	f.b.Exec(context.Background(), "squeue", args)
+
+	f.remote.write(dir+"/job.out", "early\n")
+	f.b.SyncAll(context.Background())
+	if _, err := os.Stat(filepath.Join(dir, "job.out")); err == nil {
+		t.Fatal("pending job was pulled")
+	}
+
+	f.remote.setState(id, "RUNNING", 0, 0)
+	f.b.Exec(context.Background(), "squeue", args)
+	f.b.SyncAll(context.Background())
+	if got := readFile(t, filepath.Join(dir, "job.out")); got != "early\n" {
+		t.Fatalf("running job not pulled: %q", got)
+	}
+}
+
 func TestShrunkFileIsRefetchedWhole(t *testing.T) {
 	f := newFixture(t)
 	dir := f.podDir("ns-uid1")
-	f.submit(dir)
+	f.running(f.submit(dir))
 	f.remote.write(dir+"/run-ctn.out", strings.Repeat("a", smallFile+100))
 	f.b.SyncAll(context.Background())
 	f.remote.write(dir+"/run-ctn.out", strings.Repeat("b", smallFile+50))

@@ -148,7 +148,8 @@ func (b *Bridge) SyncAll(ctx context.Context) {
 			continue
 		}
 		j.mu.Lock()
-		if !j.done {
+		// A pending job has written nothing yet, and may wait in the queue for hours.
+		if !j.done && j.state != "PD" {
 			if err := b.pull(ctx, j); err != nil {
 				b.log.Warn("sync failed", "job", j.id, "dir", j.dir, "err", err)
 			} else if j.terminal {

@@ -71,6 +71,7 @@ type job struct {
 	dir      string
 	id       string
 	seen     map[string]fileMeta // remote file -> metadata at the last pull
+	state    string              // StateCompact code last reported by squeue
 	terminal bool
 	rounds   int  // pulls since the job was first seen terminal
 	done     bool // no more pulls needed
