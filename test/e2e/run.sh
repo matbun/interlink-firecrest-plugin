@@ -31,27 +31,35 @@ up() {
 	kubectl apply -k "$HERE"
 	kubectl -n interlink rollout status deploy/$NODE-node --timeout=300s
 	echo "waiting for node $NODE"
-	for _ in $(seq 1 60); do
-		[ "$(kubectl get node $NODE -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)" = True ] && break
-		sleep 2
-	done
+	wait_node
 	approve_csrs
 }
 
-# The virtual kubelet asks for a serving certificate, which kubectl logs needs.
+# The virtual kubelet asks for a serving certificate, which kubectl logs needs,
+# on every start. Approve its pending requests; wait for one if none is issued.
 approve_csrs() {
+	local who="system:serviceaccount:interlink:$NODE"
 	for _ in $(seq 1 30); do
-		local pending
-		pending=$(kubectl get csr -o go-template='{{range .items}}{{if not .status.certificate}}{{if eq .spec.username "system:serviceaccount:interlink:'$NODE'"}}{{.metadata.name}} {{end}}{{end}}{{end}}')
+		local pending issued
+		pending=$(kubectl get csr -o go-template='{{range .items}}{{if and (eq .spec.username "'"$who"'") (not .status.conditions)}}{{.metadata.name}} {{end}}{{end}}')
 		if [ -n "$pending" ]; then
 			# shellcheck disable=SC2086
 			kubectl certificate approve $pending
 			return 0
 		fi
-		[ -n "$(kubectl get csr -o name 2>/dev/null)" ] && kubectl get csr -o jsonpath='{range .items[*]}{.spec.username}{" "}{.status.certificate}{"\n"}{end}' | grep -q "serviceaccount:interlink:$NODE .\+" && return 0
+		issued=$(kubectl get csr -o go-template='{{range .items}}{{if and (eq .spec.username "'"$who"'") .status.certificate}}x{{end}}{{end}}')
+		[ -n "$issued" ] && return 0
 		sleep 2
 	done
 	echo "no serving CSR from $NODE; kubectl logs may fail" >&2
+}
+
+wait_node() {
+	for _ in $(seq 1 60); do
+		[ "$(kubectl get node $NODE -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)" = True ] && return 0
+		sleep 2
+	done
+	return 1
 }
 
 PASS=0
@@ -79,9 +87,10 @@ wait_phase() { # pod phase timeout
 
 test_all() {
 	kubectl delete -f "$HERE/pod.yaml" --ignore-not-found --wait=true >/dev/null
+	approve_csrs >/dev/null
 	echo
 	echo "== node"
-	check "virtual node $NODE is Ready" bash -c "[ \"\$(kubectl get node $NODE -o jsonpath='{.status.conditions[?(@.type==\"Ready\")].status}')\" = True ]"
+	check "virtual node $NODE is Ready" wait_node
 	local cpu
 	cpu=$(kubectl get node $NODE -o jsonpath='{.status.capacity.cpu}')
 	check "node capacity reported (cpu=$cpu)" test -n "$cpu"
