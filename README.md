@@ -82,8 +82,9 @@ hosts, where it also switches the kubelet to the cgroupfs driver.
 
 ## Deploying
 
-The bridge runs next to the plugin, in the same pod. `test/e2e/` is a complete
-example on top of the interLink helm chart:
+The bridge runs next to the plugin, in the same pod. `deploy/cscs/` is a
+ready-to-fill virtual node for CSCS, and `test/e2e/` the same layout as tested
+in kind, both on top of the interLink helm chart:
 
 - an init container, `firecrest-bridge install-shims /opt/firecrest-bridge`,
   copies the binary and the four shims into a volume the plugin mounts;

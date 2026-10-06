@@ -1,0 +1,78 @@
+# interlink-helm-chart values for a virtual node that offloads to CSCS (Alps)
+# through FirecREST: virtual kubelet, interLink API and the official slurm
+# plugin in one pod. kustomization.yaml adds the bridge next to the plugin.
+# Fill in every <...> before applying.
+nodeName: cscs-firecrest
+
+interlink:
+  enabled: true
+  image: ghcr.io/interlink-hq/interlink/interlink:0.6.3-pre2
+  address: http://localhost
+  port: 3000
+
+virtualNode:
+  image: ghcr.io/interlink-hq/interlink/virtual-kubelet-inttw:0.6.3-pre2
+  # What the virtual node advertises to the scheduler; size it to the
+  # allocation, not to the machine.
+  resources:
+    CPUs: 64
+    memGiB: 256
+    pods: 100
+
+plugin:
+  enabled: true
+  image: ghcr.io/interlink-hq/interlink-sidecar-slurm/interlink-sidecar-slurm:0.6.3-pre2
+  # The image's default entrypoint also starts a local Slurm; run the plugin only.
+  command: ["/sidecar/slurm-sidecar"]
+  address: http://localhost
+  port: 4000
+  envs:
+    - name: SLURMCONFIGPATH
+      value: /etc/interlink/plugin.yaml
+    - name: SHARED_FS
+      value: "true"
+  extraVolumeMounts:
+    # Same absolute path as DataRootFolder below and JobRoot in FirecrestConfig.yaml.
+    - name: jobs
+      mountPath: /capstor/scratch/cscs/<user>/interlink/jobs
+    - name: bridge-socket
+      mountPath: /var/run/firecrest-bridge
+    - name: bridge-shims
+      mountPath: /opt/firecrest-bridge
+      readOnly: true
+  config: |
+    SidecarPort: "4000"
+    Socket: ""
+    # The Slurm commands are the bridge shims, installed by the init container.
+    SbatchPath: /opt/firecrest-bridge/sbatch
+    ScancelPath: /opt/firecrest-bridge/scancel
+    SqueuePath: /opt/firecrest-bridge/squeue
+    SinfoPath: /opt/firecrest-bridge/sinfo
+    # Mirrored to the same path on Alps by the bridge (its JobRoot).
+    DataRootFolder: /capstor/scratch/cscs/<user>/interlink/jobs/
+    ExportPodData: true
+    Namespace: vk
+    BashPath: /bin/bash
+    # Alps runs the enroot-based Container Engine, not Apptainer.
+    ContainerRuntime: enroot
+    EnrootPath: enroot
+    EnrootDefaultOptions: ["--rw"]
+    ImagePrefix: "docker://"
+    EnableProbes: true
+    DefaultFlavor: default
+    Flavors:
+      default:
+        Name: default
+        Description: CPU job on Alps
+        CPUDefault: 8
+        MemoryDefault: 32G
+        SlurmFlags:
+          - --partition=<partition>
+
+extraVolumes:
+  - name: jobs
+    emptyDir: {}
+  - name: bridge-socket
+    emptyDir: {}
+  - name: bridge-shims
+    emptyDir: {}
