@@ -157,9 +157,9 @@ func (c *Config) applyDefaults() {
 func (c Config) Validate() error {
 	switch {
 	case c.FirecrestURL == "":
-		return errors.New("FirecrestURL is required")
+		return errors.New("missing FirecrestURL")
 	case c.System == "":
-		return errors.New("System is required")
+		return errors.New("missing System")
 	case c.APIKey == "" && (c.TokenURL == "" || c.ClientID == "" || c.ClientSecret == ""):
 		return errors.New("set APIKey, or TokenURL, ClientID and ClientSecret")
 	case c.JobRoot == "" || !filepath.IsAbs(c.JobRoot) || c.JobRoot == "/":

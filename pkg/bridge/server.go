@@ -57,8 +57,7 @@ func Listen(socket string) (net.Listener, error) {
 		return nil, err
 	}
 	if err := os.Chmod(socket, 0o660); err != nil {
-		l.Close()
-		return nil, err
+		return nil, errors.Join(err, l.Close())
 	}
 	return l, nil
 }

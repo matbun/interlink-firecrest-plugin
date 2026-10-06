@@ -135,7 +135,9 @@ func daemon(args []string) error {
 		<-ctx.Done()
 		shutdown, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		srv.Shutdown(shutdown)
+		if err := srv.Shutdown(shutdown); err != nil {
+			log.Warn("shutdown", "err", err)
+		}
 	}()
 	log.Info("listening", "socket", cfg.Socket, "jobRoot", cfg.JobRoot, "version", version)
 	if err := srv.Serve(l); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -168,7 +170,9 @@ func installShims(dir string) error {
 	}
 	for _, s := range shimNames {
 		link := filepath.Join(dir, s)
-		os.Remove(link)
+		if err := os.Remove(link); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
 		if err := os.Symlink("firecrest-bridge", link); err != nil {
 			return err
 		}

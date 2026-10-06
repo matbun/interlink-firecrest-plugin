@@ -221,7 +221,7 @@ func (b *Bridge) pull(ctx context.Context, j *job) error {
 }
 
 // fetch brings local up to date with a remote file of the given size.
-func (b *Bridge) fetch(ctx context.Context, remote, local string, size int64) error {
+func (b *Bridge) fetch(ctx context.Context, remote, local string, size int64) (err error) {
 	if err := os.MkdirAll(filepath.Dir(local), 0o755); err != nil {
 		return err
 	}
@@ -229,7 +229,11 @@ func (b *Bridge) fetch(ctx context.Context, remote, local string, size int64) er
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	defer func() {
+		if cerr := f.Close(); err == nil {
+			err = cerr
+		}
+	}()
 	info, err := f.Stat()
 	if err != nil {
 		return err
