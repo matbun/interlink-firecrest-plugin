@@ -1,0 +1,62 @@
+name: e2e
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  firecrest:
+    name: slurm plugin + bridge on FirecREST's demo stack, then kind
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
+
+      # Ubuntu restricts unprivileged user namespaces through AppArmor; Apptainer
+      # and enroot in the demo Slurm node need them.
+      - name: Allow unprivileged user namespaces
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+
+      - name: Build the bridge image
+        run: make image
+
+      - name: Integration test (FirecREST demo stack, plugin, bridge)
+        run: test/integration/run.sh
+
+      - name: Check out the interLink helm chart
+        uses: actions/checkout@v7
+        with:
+          repository: interlink-hq/interlink-helm-chart
+          ref: 055798f5fabbef82824b776613962d85c7110934
+          path: .chart
+
+      - name: Install kind
+        run: |
+          curl -fsSLo kind https://kind.sigs.k8s.io/dl/v0.31.0/kind-linux-amd64
+          sudo install kind /usr/local/bin/kind
+
+      - name: End-to-end test (kind, virtual kubelet, interLink API)
+        run: test/e2e/run.sh
+        env:
+          CHART: ${{ github.workspace }}/.chart/interlink
+
+      - name: Diagnostics
+        if: failure()
+        run: |
+          docker ps -a
+          docker compose -f test/integration/compose.yaml logs --tail 100
+          docker logs --tail 100 f7t-firecrest-1 || true
+          docker logs --tail 50 f7t-slurm-1 || true
+          export KUBECONFIG=test/e2e/.kubeconfig
+          kubectl get nodes,pods -A -o wide || true
+          kubectl -n interlink logs deploy/firecrest-node-node --all-containers --tail 100 || true

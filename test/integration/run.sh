@@ -28,12 +28,12 @@ up() {
 		git clone -q https://github.com/eth-cscs/firecrest-v2 "$F7T_DIR"
 	fi
 	git -C "$F7T_DIR" checkout -q "$F7T_REF"
-	# Build FirecREST's images without the overlay: with it, compose would build
-	# the stock demo cluster under the overlay's image name.
-	(cd "$F7T_DIR" && docker compose -p f7t -f docker-compose.yml build firecrest slurm ssh-ca)
+	# Build FirecREST's images without the runtime overlay: with it, compose
+	# would build the stock demo cluster under the overlay's image name.
+	(cd "$F7T_DIR" && docker compose -p f7t -f docker-compose.yml -f "$HERE/firecrest-build.yaml" build firecrest slurm)
 	docker build -q -t firecrest-bridge-test/slurm-apptainer:latest "$HERE/slurm-apptainer" >/dev/null
-	# MinIO (S3 transfers) and PBS are not needed.
-	f7t up -d --no-build firecrest slurm keycloak keycloak-create-user ssh-ca
+	# MinIO (S3 transfers), PBS and the SSH CA are not needed.
+	f7t up -d --no-build firecrest slurm keycloak keycloak-create-user
 	echo "waiting for FirecREST"
 	for _ in $(seq 1 90); do
 		code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8000/status/systems || true)

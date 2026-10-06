@@ -22,7 +22,9 @@ export KUBECONFIG=${KUBECONFIG_E2E:-$HERE/.kubeconfig}
 
 up() {
 	if ! kind get clusters | grep -qx "$CLUSTER"; then
-		kind create cluster --name "$CLUSTER" --config "$HERE/kind.yaml" --kubeconfig "$KUBECONFIG" --wait 120s
+		local config=$HERE/kind.yaml
+		[ "$(stat -fc %T /sys/fs/cgroup)" = cgroup2fs ] || config=$HERE/kind-cgroupv1.yaml
+		kind create cluster --name "$CLUSTER" --config "$config" --kubeconfig "$KUBECONFIG" --wait 120s
 	fi
 	docker network connect "$F7T_NET" "$CLUSTER-control-plane" 2>/dev/null || true
 	kind load docker-image --name "$CLUSTER" "$BRIDGE_IMAGE"
