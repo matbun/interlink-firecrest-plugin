@@ -18,6 +18,9 @@ SLURM_CTR=f7t-slurm-1
 # Only the local bridge image is loaded; the node pulls the published ones
 # (kind load fails on multi-arch images that docker holds one platform of).
 BRIDGE_IMAGE=firecrest-bridge:dev
+# kustomize: helm template + kustomize patch (any chart); helm: helm install
+# with values-helm.yaml (a chart with extraContainers/extraInitContainers).
+INSTALL=${INSTALL:-kustomize}
 export KUBECONFIG=${KUBECONFIG_E2E:-$HERE/.kubeconfig}
 
 up() {
@@ -28,9 +31,16 @@ up() {
 	fi
 	docker network connect "$F7T_NET" "$CLUSTER-control-plane" 2>/dev/null || true
 	kind load docker-image --name "$CLUSTER" "$BRIDGE_IMAGE"
-	helm template firecrest "$CHART" -n interlink --no-hooks -f "$HERE/values.yaml" >"$HERE/rendered.yaml"
 	kubectl create namespace interlink --dry-run=client -o yaml | kubectl apply -f -
-	kubectl apply -k "$HERE"
+	if [ "$INSTALL" = helm ]; then
+		# Needs a chart with extraContainers/extraInitContainers; no kustomize.
+		kubectl -n interlink create secret generic firecrest-client \
+			--from-literal=client-secret=wZVHVIEd9dkJDh9hMKc6DTvkqXxnDttk --dry-run=client -o yaml | kubectl apply -f -
+		helm upgrade --install firecrest "$CHART" -n interlink -f "$HERE/values.yaml" -f "$HERE/values-helm.yaml"
+	else
+		helm template firecrest "$CHART" -n interlink --no-hooks -f "$HERE/values.yaml" >"$HERE/rendered.yaml"
+		kubectl apply -k "$HERE"
+	fi
 	kubectl -n interlink rollout status deploy/$NODE-node --timeout=300s
 	echo "waiting for node $NODE"
 	wait_node
