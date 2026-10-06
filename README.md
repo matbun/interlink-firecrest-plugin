@@ -54,6 +54,11 @@ with the official slurm plugin `0.6.3-pre2` and interLink `0.6.3-pre2`:
 
 Not yet run against CSCS.
 
+CI (`.github/workflows/`) runs on every pull request and push to `main`:
+`ci.yaml` runs golangci-lint, `go vet` and the unit tests, and builds the
+bridge image for amd64 and arm64 without pushing it; `e2e.yaml` runs both
+scripts above on a GitHub runner.
+
 ## Try it locally
 
 Needs docker (with compose), kind, helm, kubectl, jq and Go 1.26.
@@ -68,8 +73,9 @@ test/e2e/run.sh down; test/integration/run.sh down
 
 `test/integration/run.sh` clones `eth-cscs/firecrest-v2` at a pinned commit
 into `~/.cache/firecrest-bridge`, adds Apptainer and enroot to its demo Slurm
-node, and leaves out MinIO and PBS (not needed). The kind test uses
-`kindest/node:v1.34.3`, the last image whose kubelet starts on cgroup v1 hosts.
+node, and leaves out MinIO, PBS and the SSH CA (not needed). The kind test
+uses `kindest/node:v1.34.3`, the last image whose kubelet starts on cgroup v1
+hosts, where it also switches the kubelet to the cgroupfs driver.
 
 ## Deploying
 
