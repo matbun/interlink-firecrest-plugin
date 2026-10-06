@@ -57,7 +57,10 @@ Not yet run against CSCS.
 CI (`.github/workflows/`) runs on every pull request and push to `main`:
 `ci.yaml` runs golangci-lint, `go vet` and the unit tests, and builds the
 bridge image for amd64 and arm64 without pushing it; `e2e.yaml` runs both
-scripts above on a GitHub runner.
+scripts above on a GitHub runner. Publishing a GitHub release tagged `X.Y.Z`
+runs `release.yaml`, which pushes
+`registry.cern.ch/interlink/firecrest-bridge:X.Y.Z` with the `HARBOR_USERNAME`
+and `HARBOR_PASSWORD` secrets of the `harbor` environment.
 
 ## Try it locally
 
