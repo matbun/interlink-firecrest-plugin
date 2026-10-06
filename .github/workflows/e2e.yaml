@@ -12,7 +12,9 @@ permissions:
 jobs:
   firecrest:
     name: slurm plugin + bridge on FirecREST's demo stack, then kind
-    runs-on: ubuntu-latest
+    # Pinned: the job depends on host details (AppArmor user namespace
+    # restriction, cgroup version) that change between Ubuntu releases.
+    runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v7
