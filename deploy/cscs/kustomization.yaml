@@ -1,0 +1,69 @@
+# The chart rendered into rendered.yaml (see README.md), plus the bridge: an
+# init container that installs the Slurm shims for the plugin, and the daemon.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: interlink-cscs
+
+resources:
+  - rendered.yaml
+
+configMapGenerator:
+  - name: firecrest-bridge-config
+    files:
+      - FirecrestConfig.yaml
+
+secretGenerator:
+  # client-secret is a local file holding the FirecREST client secret; it is
+  # gitignored and never committed.
+  - name: firecrest-client
+    files:
+      - client-secret
+
+patches:
+  # The chart renders a single Deployment, named <nodeName>-node.
+  - target:
+      kind: Deployment
+    patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: interlink-node
+      spec:
+        template:
+          spec:
+            initContainers:
+              - name: install-shims
+                image: registry.cern.ch/interlink/firecrest-bridge:0.1.0
+                args: ["install-shims", "/opt/firecrest-bridge"]
+                volumeMounts:
+                  - name: bridge-shims
+                    mountPath: /opt/firecrest-bridge
+            containers:
+              - name: firecrest-bridge
+                image: registry.cern.ch/interlink/firecrest-bridge:0.1.0
+                args: ["daemon", "--config", "/etc/interlink/FirecrestConfig.yaml"]
+                env:
+                  - name: FIRECREST_CLIENT_SECRET
+                    valueFrom:
+                      secretKeyRef:
+                        name: firecrest-client
+                        key: client-secret
+                resources:
+                  requests:
+                    cpu: 50m
+                    memory: 64Mi
+                  limits:
+                    cpu: 500m
+                    memory: 256Mi
+                volumeMounts:
+                  - name: jobs
+                    mountPath: /capstor/scratch/cscs/<user>/interlink/jobs
+                  - name: bridge-socket
+                    mountPath: /var/run/firecrest-bridge
+                  - name: bridge-config
+                    mountPath: /etc/interlink/FirecrestConfig.yaml
+                    subPath: FirecrestConfig.yaml
+            volumes:
+              - name: bridge-config
+                configMap:
+                  name: firecrest-bridge-config

@@ -1,0 +1,39 @@
+{
+  "pod": {
+    "apiVersion": "v1",
+    "kind": "Pod",
+    "metadata": {
+      "name": "config",
+      "namespace": "default",
+      "uid": "11111111-0000-4000-8000-000000000004"
+    },
+    "spec": {
+      "containers": [
+        {
+          "name": "main",
+          "image": "alpine:3.20",
+          "command": ["sh", "-c"],
+          "args": ["echo greeting=$(cat /etc/demo/greeting); echo DEMO_VAR=$DEMO_VAR; echo scratch > /scratch/f && echo scratch=$(cat /scratch/f)"],
+          "env": [{"name": "DEMO_VAR", "value": "set-in-pod-spec"}],
+          "volumeMounts": [
+            {"name": "demo", "mountPath": "/etc/demo"},
+            {"name": "scratch", "mountPath": "/scratch"}
+          ]
+        }
+      ],
+      "volumes": [
+        {"name": "demo", "configMap": {"name": "demo-cm", "defaultMode": 420}},
+        {"name": "scratch", "emptyDir": {}}
+      ]
+    }
+  },
+  "container": [
+    {
+      "name": "main",
+      "configMaps": [
+        {"metadata": {"name": "demo-cm", "namespace": "default"}, "data": {"greeting": "hello-from-configmap"}}
+      ],
+      "emptyDirs": ["scratch"]
+    }
+  ]
+}

@@ -1,0 +1,19 @@
+# kind.yaml for cgroup v1 hosts (EL8). Kubernetes 1.34 is the last kind node
+# image whose kubelet still starts there, and the kubelet also needs the
+# cgroupfs driver: with systemd it fails with "cgroup [kubelet kubepods] has
+# some missing paths" (same settings as interlink-demo's kind-config.yaml).
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+nodes:
+  - role: control-plane
+    image: kindest/node:v1.34.3
+kubeadmConfigPatches:
+  - |
+    kind: InitConfiguration
+    nodeRegistration:
+      kubeletExtraArgs:
+        cgroup-driver: "cgroupfs"
+containerdConfigPatches:
+  - |-
+    [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.runc.options]
+      SystemdCgroup = false

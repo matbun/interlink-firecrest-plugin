@@ -1,0 +1,8 @@
+# Overlay used only to build FirecREST's images: the demo cluster image is
+# declared for amd64 and arm64, which needs emulation on a single-arch host
+# such as a CI runner. Build it for this host only.
+services:
+  slurm:
+    build:
+      platforms: !override
+        - ${F7T_PLATFORM:-linux/amd64}

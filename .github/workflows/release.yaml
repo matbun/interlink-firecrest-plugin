@@ -1,0 +1,55 @@
+name: release
+
+# Publishing a GitHub release tagged X.Y.Z (or X.Y.Z-suffix) pushes
+# registry.cern.ch/interlink/firecrest-bridge:<tag> for amd64 and arm64.
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+env:
+  REGISTRY: registry.cern.ch
+  IMAGE: registry.cern.ch/interlink/firecrest-bridge
+
+jobs:
+  image:
+    name: push image to registry.cern.ch
+    runs-on: ubuntu-24.04
+    # Environment secrets HARBOR_USERNAME and HARBOR_PASSWORD; the environment
+    # only admits release tags, so no other workflow run can read them.
+    environment: harbor
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Check the tag format
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          if ! [[ "$TAG" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "release tag $TAG is not X.Y.Z or X.Y.Z-suffix" >&2
+            exit 1
+          fi
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - name: Unit tests
+        run: go test -race ./...
+
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ secrets.HARBOR_USERNAME }}
+          password: ${{ secrets.HARBOR_PASSWORD }}
+      - name: Build and push firecrest-bridge
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: docker/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          build-args: VERSION=${{ github.event.release.tag_name }}
+          tags: ${{ env.IMAGE }}:${{ github.event.release.tag_name }}
+          push: true

@@ -1,0 +1,10 @@
+# Bridge configuration for FirecREST's local demo stack (firecrest-v2
+# docker-compose.yml). The client secret is the demo one shipped in that file.
+FirecrestURL: http://192.168.240.10:5000
+System: cluster-slurm-ssh
+TokenURL: http://192.168.240.3:8080/auth/realms/kcrealm/protocol/openid-connect/token
+ClientID: firecrest-test-client
+ClientSecret: wZVHVIEd9dkJDh9hMKc6DTvkqXxnDttk
+JobRoot: /home/fireuser/interlink/jobs
+Socket: /var/run/firecrest-bridge/bridge.sock
+SyncInterval: 2s

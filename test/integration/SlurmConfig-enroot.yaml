@@ -1,0 +1,33 @@
+# SlurmConfig.yaml with the enroot runtime, which is what Alps runs.
+SidecarPort: "4000"
+Socket: ""
+SbatchPath: /opt/firecrest-bridge/sbatch
+ScancelPath: /opt/firecrest-bridge/scancel
+SqueuePath: /opt/firecrest-bridge/squeue
+SinfoPath: /opt/firecrest-bridge/sinfo
+CommandPrefix: ""
+ImagePrefix: "docker://"
+SingularityPath: singularity
+SingularityDefaultOptions: []
+ExportPodData: true
+DataRootFolder: /home/fireuser/interlink/jobs/
+Namespace: vk
+Tsocks: false
+BashPath: /bin/bash
+VerboseLogging: true
+ErrorsOnlyLogging: false
+ContainerRuntime: enroot
+EnrootPath: enroot
+EnrootDefaultOptions: ["--rw"]
+EnableProbes: true
+
+# The demo cluster has one node with 2 CPUs and 1000 MB of RealMemory.
+DefaultFlavor: demo
+Flavors:
+  demo:
+    Name: demo
+    Description: FirecREST demo cluster
+    CPUDefault: 1
+    MemoryDefault: 400M
+    SlurmFlags:
+      - --partition=part01

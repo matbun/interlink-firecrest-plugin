@@ -1,0 +1,23 @@
+{
+  "pod": {
+    "apiVersion": "v1",
+    "kind": "Pod",
+    "metadata": {
+      "name": "enroot",
+      "namespace": "default",
+      "uid": "11111111-0000-4000-8000-000000000006"
+    },
+    "spec": {
+      "containers": [
+        {
+          "name": "main",
+          "image": "alpine:3.20",
+          "command": ["sh", "-c"],
+          "args": ["echo enroot container alpine $(cat /etc/alpine-release); echo DEMO_VAR=$DEMO_VAR"],
+          "env": [{"name": "DEMO_VAR", "value": "through-enroot"}]
+        }
+      ]
+    }
+  },
+  "container": [{"name": "main"}]
+}

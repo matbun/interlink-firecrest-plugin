@@ -30,3 +30,10 @@ go.work.sum
 # Editor/IDE
 # .idea/
 # .vscode/
+
+# Build output
+bin/
+
+# Test artifacts
+test/e2e/rendered.yaml
+test/e2e/.kubeconfig
