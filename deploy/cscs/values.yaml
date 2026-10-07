@@ -1,7 +1,8 @@
-# interlink-helm-chart values for a virtual node that offloads to CSCS (Alps)
-# through FirecREST: virtual kubelet, interLink API and the official slurm
-# plugin in one pod. kustomization.yaml adds the bridge next to the plugin.
-# Fill in every <...> before applying.
+# interlink-helm-chart values (0.6.2-pre5 or later) for a virtual node that
+# offloads to CSCS (Alps) through FirecREST: virtual kubelet, interLink API and
+# the official slurm plugin in one pod, plus the bridge as an extra container.
+# Fill in every <...> before installing. The job root path must be the same in
+# all four places it appears.
 nodeName: cscs-firecrest
 
 interlink:
@@ -32,7 +33,6 @@ plugin:
     - name: SHARED_FS
       value: "true"
   extraVolumeMounts:
-    # Same absolute path as DataRootFolder below and JobRoot in FirecrestConfig.yaml.
     - name: jobs
       mountPath: /capstor/scratch/cscs/<user>/interlink/jobs
     - name: bridge-socket
@@ -48,7 +48,7 @@ plugin:
     ScancelPath: /opt/firecrest-bridge/scancel
     SqueuePath: /opt/firecrest-bridge/squeue
     SinfoPath: /opt/firecrest-bridge/sinfo
-    # Mirrored to the same path on Alps by the bridge (its JobRoot).
+    # Mirrored to the same path on Alps by the bridge (its job root).
     DataRootFolder: /capstor/scratch/cscs/<user>/interlink/jobs/
     ExportPodData: true
     Namespace: vk
@@ -68,6 +68,52 @@ plugin:
         MemoryDefault: 32G
         SlurmFlags:
           - --partition=<partition>
+
+extraInitContainers:
+  - name: install-shims
+    image: registry.cern.ch/interlink/firecrest-bridge:0.1.0
+    args: ["install-shims", "/opt/firecrest-bridge"]
+    volumeMounts:
+      - name: bridge-shims
+        mountPath: /opt/firecrest-bridge
+
+# The bridge takes its configuration from the environment ("--config ''");
+# the client secret comes from the firecrest-client Secret, created beforehand.
+extraContainers:
+  - name: firecrest-bridge
+    image: registry.cern.ch/interlink/firecrest-bridge:0.1.0
+    args: ["daemon", "--config", ""]
+    env:
+      - name: FIRECREST_URL
+        value: https://api.cscs.ch/hpc/firecrest/v2
+      - name: FIRECREST_SYSTEM
+        value: "<system, e.g. daint>"
+      - name: FIRECREST_TOKEN_URL
+        value: https://auth.cscs.ch/auth/realms/firecrest-clients/protocol/openid-connect/token
+      - name: FIRECREST_CLIENT_ID
+        value: "<client id from the CSCS Developer Portal>"
+      - name: FIRECREST_CLIENT_SECRET
+        valueFrom:
+          secretKeyRef:
+            name: firecrest-client
+            key: client-secret
+      # Passed to every job as --account.
+      - name: FIRECREST_ACCOUNT
+        value: "<project>"
+      - name: FIRECREST_JOB_ROOT
+        value: /capstor/scratch/cscs/<user>/interlink/jobs
+    resources:
+      requests:
+        cpu: 50m
+        memory: 64Mi
+      limits:
+        cpu: 500m
+        memory: 256Mi
+    volumeMounts:
+      - name: jobs
+        mountPath: /capstor/scratch/cscs/<user>/interlink/jobs
+      - name: bridge-socket
+        mountPath: /var/run/firecrest-bridge
 
 extraVolumes:
   - name: jobs

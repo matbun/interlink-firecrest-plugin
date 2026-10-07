@@ -35,22 +35,13 @@ jobs:
       - name: Integration test (FirecREST demo stack, plugin, bridge)
         run: test/integration/run.sh
 
-      - name: Check out the interLink helm chart
-        uses: actions/checkout@v7
-        with:
-          repository: interlink-hq/interlink-helm-chart
-          ref: 055798f5fabbef82824b776613962d85c7110934
-          path: .chart
-
       - name: Install kind
         run: |
           curl -fsSLo kind https://kind.sigs.k8s.io/dl/v0.31.0/kind-linux-amd64
           sudo install kind /usr/local/bin/kind
 
-      - name: End-to-end test (kind, virtual kubelet, interLink API)
+      - name: End-to-end test (kind, helm install of interLink chart 0.6.2-pre5 with the bridge)
         run: test/e2e/run.sh
-        env:
-          CHART: ${{ github.workspace }}/.chart/interlink
 
       - name: Diagnostics
         if: failure()

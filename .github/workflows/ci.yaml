@@ -29,6 +29,14 @@ jobs:
       - name: Build
         run: make build
 
+  render:
+    name: helm render of the values files
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - name: Render the interLink chart with deploy/ and test/e2e values
+        run: test/render/run.sh
+
   image:
     name: build image (not pushed)
     runs-on: ubuntu-latest

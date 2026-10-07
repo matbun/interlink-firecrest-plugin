@@ -1,52 +1,57 @@
 # Virtual node for CSCS (Alps) through FirecREST
 
-A separate interLink virtual node, next to any others in the cluster: the
-upstream interLink helm chart (virtual kubelet, interLink API, official slurm
-plugin) plus the bridge, added with kustomize because the chart has no
-sidecar hook. Nothing here uses SSH: the only connection is HTTPS from the
-bridge to `api.cscs.ch` and `auth.cscs.ch`.
+A separate interLink virtual node, next to any others in the cluster, installed
+with `helm install` from the upstream interLink chart (0.6.2-pre5 or later): the
+chart's virtual kubelet, interLink API and official slurm plugin, with the
+bridge added through the chart's `extraContainers` and `extraInitContainers`.
+Nothing here uses SSH: the only connection is HTTPS from the bridge to
+`api.cscs.ch` and `auth.cscs.ch`.
 
-```
-Deployment cscs-firecrest-node, namespace interlink-cscs
-  init: install-shims    copies sbatch/squeue/scancel/sinfo shims into bridge-shims
-  vk, interlink          from the chart
-  plugin                 official image; its Slurm commands are the shims
-  firecrest-bridge       answers the shims through FirecREST, mirrors the job dir
-emptyDirs: jobs (the JobRoot path), bridge-socket, bridge-shims
+```mermaid
+flowchart TB
+  subgraph pod["Pod cscs-firecrest-node"]
+    direction LR
+    init["install-shims<br/>(extraInitContainers)"] -- shims --> chart["vk, interlink, plugin<br/>(from the chart)"]
+    chart -- "Slurm commands,<br/>job directory" --> bridge["firecrest-bridge<br/>(extraContainers)"]
+  end
+  subgraph cscs["CSCS"]
+    direction LR
+    firecrest["FirecREST<br/>api.cscs.ch"] --> alps["Slurm on Alps"]
+  end
+  pod -- "HTTPS, from the bridge" --> cscs
 ```
 
 ## Before you start
 
 - A FirecREST client from the CSCS Developer Portal (client id and secret). Jobs
   run as the user who owns it.
-- A project with compute time on the target system, for `Account`.
-- The bridge image `registry.cern.ch/interlink/firecrest-bridge:0.1.0`
-  (published by the `0.1.0` release).
+- A project with compute time on the target system, for `FIRECREST_ACCOUNT`.
 - Outbound HTTPS from the cluster to `api.cscs.ch` and `auth.cscs.ch`.
 
 ## Deploy
 
-1. Fill every `<...>` in `values.yaml`, `FirecrestConfig.yaml` and the `jobs`
-   mount path in `kustomization.yaml`. The job root path must be identical in
-   all four places: `DataRootFolder`, `JobRoot` and both `jobs` mounts.
-2. Put the client secret in a file named `client-secret` here (gitignored):
+1. Fill every `<...>` in `values.yaml`. The job root path appears four times
+   (`DataRootFolder`, `FIRECREST_JOB_ROOT` and the two `jobs` mounts) and must
+   be identical in all of them.
+2. Create the namespace and the Secret with the client secret, the only object
+   the chart does not create:
 
    ```bash
-   printf '%s' '<client secret>' > client-secret
-   ```
-
-3. Render the chart and apply:
-
-   ```bash
-   helm repo add interlink https://interlink-hq.github.io/interlink-helm-chart/
-   helm template cscs interlink/interlink --version 0.6.2-pre4 \
-     -n interlink-cscs --no-hooks -f values.yaml > rendered.yaml
    kubectl create namespace interlink-cscs
-   kubectl apply -k .
+   kubectl -n interlink-cscs create secret generic firecrest-client \
+     --from-literal=client-secret='<client secret>'
    ```
 
-   `--no-hooks` leaves out the chart's helm hooks: applied with kubectl, its
-   pre-delete cleanup Job would run immediately and delete the node.
+3. Install:
+
+   ```bash
+   helm install cscs -n interlink-cscs -f values.yaml \
+     https://github.com/interlink-hq/interlink-helm-chart/releases/download/interlink-0.6.2-pre5/interlink-0.6.2-pre5.tgz
+   ```
+
+   If helm stops at "no cached repo found" for one of your configured
+   repositories, run `helm repo update` or prefix the command with
+   `HELM_REPOSITORY_CONFIG=/dev/null`.
 
 4. Approve the virtual kubelet's serving certificate, which `kubectl logs`
    needs (it asks again on every restart):
@@ -73,4 +78,4 @@ spec:
   pod's env file over `/etc/environment`, which enroot does not load: pod env
   vars do not reach the container.
 - No Services into the job: there is no network tunnel to Alps.
-- Logs reach `kubectl logs` with up to `SyncInterval` (5 s) delay.
+- Logs reach `kubectl logs` with up to 5 s delay (the bridge's sync interval).

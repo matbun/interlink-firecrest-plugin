@@ -35,5 +35,4 @@ go.work.sum
 bin/
 
 # Test artifacts
-test/e2e/rendered.yaml
 test/e2e/.kubeconfig

@@ -3,7 +3,7 @@
 # node runs on FirecREST's demo cluster through the official slurm plugin and
 # the bridge. Needs the demo stack from test/integration/run.sh up.
 #
-#   run.sh up     kind cluster + interLink (helm chart) + bridge
+#   run.sh up     kind cluster + helm install of the interLink chart with the bridge
 #   run.sh test   run pod.yaml and check status, logs and cleanup
 #   run.sh down   delete the kind cluster
 #   run.sh        up, then test
@@ -11,7 +11,9 @@ set -euo pipefail
 
 HERE=$(cd "$(dirname "$0")" && pwd)
 CLUSTER=${CLUSTER:-firecrest-bridge}
-CHART=${CHART:-$HERE/../../../interlink-helm-chart/interlink}
+# The released chart by default; CHART=<path> tests a local checkout instead.
+CHART_VERSION=${CHART_VERSION:-0.6.2-pre5}
+CHART=${CHART:-https://github.com/interlink-hq/interlink-helm-chart/releases/download/interlink-$CHART_VERSION/interlink-$CHART_VERSION.tgz}
 NODE=firecrest-node
 F7T_NET=f7t_firecrest-internal-v2
 SLURM_CTR=f7t-slurm-1
@@ -28,9 +30,13 @@ up() {
 	fi
 	docker network connect "$F7T_NET" "$CLUSTER-control-plane" 2>/dev/null || true
 	kind load docker-image --name "$CLUSTER" "$BRIDGE_IMAGE"
-	helm template firecrest "$CHART" -n interlink --no-hooks -f "$HERE/values.yaml" >"$HERE/rendered.yaml"
 	kubectl create namespace interlink --dry-run=client -o yaml | kubectl apply -f -
-	kubectl apply -k "$HERE"
+	# The demo stack's secret for firecrest-test-client (firecrest-v2 docker-compose.yml).
+	kubectl -n interlink create secret generic firecrest-client \
+		--from-literal=client-secret=wZVHVIEd9dkJDh9hMKc6DTvkqXxnDttk --dry-run=client -o yaml | kubectl apply -f -
+	# The chart comes from a URL or a path: no helm repositories needed, and none
+	# of the local ones (a missing index cache there makes helm fail).
+	HELM_REPOSITORY_CONFIG=/dev/null helm upgrade --install firecrest "$CHART" -n interlink -f "$HERE/values.yaml"
 	kubectl -n interlink rollout status deploy/$NODE-node --timeout=300s
 	echo "waiting for node $NODE"
 	wait_node
