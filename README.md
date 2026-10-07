@@ -10,13 +10,10 @@ runs unchanged, and `firecrest-bridge` gives it what it expects from a login
 node: the Slurm commands and a job directory that the job can see.
 
 ```mermaid
-flowchart LR
-  vk["virtual kubelet"] --> api["interLink API"] --> plugin["slurm plugin<br/>(official image, unchanged)"]
-  plugin -- "sbatch, squeue, scancel, sinfo" --> shims["shims"]
-  shims -- "unix socket" --> bridge["firecrest-bridge"]
-  bridge -- HTTPS --> firecrest["FirecREST"] --> slurm["Slurm"]
-  plugin -. "writes and reads" .- jobs[("job directory")]
-  bridge -. "mirrors it on the cluster" .- jobs
+flowchart TB
+  vk["virtual kubelet + interLink API"] --> plugin["slurm plugin<br/>(official image, unchanged)"]
+  plugin -- "sbatch, squeue, scancel, sinfo<br/>and a local job directory" --> bridge["firecrest-bridge"]
+  bridge -- "jobs and files over HTTPS" --> firecrest["FirecREST"] --> slurm["Slurm"]
 ```
 
 ## How it works

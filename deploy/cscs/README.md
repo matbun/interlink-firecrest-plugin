@@ -8,16 +8,12 @@ Nothing here uses SSH: the only connection is HTTPS from the bridge to
 `api.cscs.ch` and `auth.cscs.ch`.
 
 ```mermaid
-flowchart LR
-  subgraph pod["Pod cscs-firecrest-node, namespace interlink-cscs"]
-    init["init: install-shims"] -- "copies the shims" --> shimsvol[("bridge-shims")]
-    vk["vk"] --> interlink["interlink"] --> plugin["plugin<br/>(official image)"]
-    plugin -- "sbatch, squeue, scancel, sinfo" --> shimsvol
-    shimsvol -- "unix socket" --> bridge["firecrest-bridge"]
-    plugin --- jobs[("jobs<br/>(job root)")]
-    bridge --- jobs
+flowchart TB
+  subgraph pod["Pod cscs-firecrest-node"]
+    init["install-shims<br/>(extraInitContainers)"] -- "installs the shims" --> chart["vk, interlink, plugin<br/>(from the chart)"]
+    chart -- "Slurm commands,<br/>shared job directory" --> bridge["firecrest-bridge<br/>(extraContainers)"]
   end
-  bridge -- HTTPS --> firecrest["FirecREST<br/>api.cscs.ch"] --> alps["Slurm on Alps"]
+  bridge -- HTTPS --> firecrest["FirecREST, api.cscs.ch"] --> alps["Slurm on Alps"]
 ```
 
 ## Before you start
