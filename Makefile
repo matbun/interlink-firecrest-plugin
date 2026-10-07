@@ -1,7 +1,7 @@
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 IMAGE ?= firecrest-bridge:dev
 
-.PHONY: all build test vet image integration integration-down
+.PHONY: all build test vet render image integration integration-down
 
 all: build
 
@@ -13,6 +13,10 @@ test:
 
 vet:
 	go vet ./...
+
+# Render the interLink chart with the values files in deploy/ and test/e2e/.
+render:
+	test/render/run.sh
 
 image:
 	docker build --build-arg VERSION=$(VERSION) -t $(IMAGE) -f docker/Dockerfile .

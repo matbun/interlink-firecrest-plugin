@@ -62,8 +62,9 @@ with the official slurm plugin `0.6.3-pre2` and interLink `0.6.3-pre2`:
 Not yet run against CSCS.
 
 CI (`.github/workflows/`) runs on every pull request and push to `main`:
-`ci.yaml` runs golangci-lint, `go vet` and the unit tests, and builds the
-bridge image for amd64 and arm64 without pushing it; `e2e.yaml` runs both
+`ci.yaml` runs golangci-lint, `go vet` and the unit tests, renders the chart
+with every values file (`test/render/run.sh`), and builds the bridge image for
+amd64 and arm64 without pushing it; `e2e.yaml` runs both
 scripts above on a GitHub runner. Publishing a GitHub release tagged `X.Y.Z`
 runs `release.yaml`, which pushes
 `registry.cern.ch/interlink/firecrest-bridge:X.Y.Z` with the `HARBOR_USERNAME`
@@ -71,10 +72,11 @@ and `HARBOR_PASSWORD` secrets of the `harbor` environment.
 
 ## Try it locally
 
-Needs docker (with compose), kind, helm, kubectl, jq and Go 1.26.
+Needs docker (with compose), kind, helm, kubectl, jq, yq and Go 1.26.
 
 ```bash
 make test                     # unit tests
+make render                   # chart renders with deploy/ and test/e2e values, job root consistent
 make image                    # firecrest-bridge:dev
 test/integration/run.sh       # FirecREST demo stack + plugin + bridge, then the scenarios
 test/e2e/run.sh               # kind + helm install of the interLink chart with the bridge
