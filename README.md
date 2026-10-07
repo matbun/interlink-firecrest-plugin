@@ -11,9 +11,16 @@ node: the Slurm commands and a job directory that the job can see.
 
 ```mermaid
 flowchart TB
-  vk["virtual kubelet + interLink API"] --> plugin["slurm plugin<br/>(official image, unchanged)"]
-  plugin -- "sbatch, squeue, scancel, sinfo<br/>and a local job directory" --> bridge["firecrest-bridge"]
-  bridge -- "jobs and files over HTTPS" --> firecrest["FirecREST"] --> slurm["Slurm"]
+  subgraph k8s["Kubernetes: one pod"]
+    direction LR
+    vk["virtual kubelet<br/>+ interLink API"] --> plugin["slurm plugin<br/>(unchanged)"]
+    plugin -- "Slurm commands,<br/>job directory" --> bridge["firecrest-bridge"]
+  end
+  subgraph hpc["HPC site"]
+    direction LR
+    firecrest["FirecREST"] --> slurm["Slurm"]
+  end
+  k8s -- "HTTPS, from the bridge" --> hpc
 ```
 
 ## How it works

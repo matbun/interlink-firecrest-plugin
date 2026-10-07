@@ -10,10 +10,15 @@ Nothing here uses SSH: the only connection is HTTPS from the bridge to
 ```mermaid
 flowchart TB
   subgraph pod["Pod cscs-firecrest-node"]
-    init["install-shims<br/>(extraInitContainers)"] -- "installs the shims" --> chart["vk, interlink, plugin<br/>(from the chart)"]
-    chart -- "Slurm commands,<br/>shared job directory" --> bridge["firecrest-bridge<br/>(extraContainers)"]
+    direction LR
+    init["install-shims<br/>(extraInitContainers)"] -- shims --> chart["vk, interlink, plugin<br/>(from the chart)"]
+    chart -- "Slurm commands,<br/>job directory" --> bridge["firecrest-bridge<br/>(extraContainers)"]
   end
-  bridge -- HTTPS --> firecrest["FirecREST, api.cscs.ch"] --> alps["Slurm on Alps"]
+  subgraph cscs["CSCS"]
+    direction LR
+    firecrest["FirecREST<br/>api.cscs.ch"] --> alps["Slurm on Alps"]
+  end
+  pod -- "HTTPS, from the bridge" --> cscs
 ```
 
 ## Before you start
