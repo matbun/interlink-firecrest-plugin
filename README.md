@@ -9,12 +9,14 @@ It does not reimplement the pod-to-Slurm translation. The official
 runs unchanged, and `firecrest-bridge` gives it what it expects from a login
 node: the Slurm commands and a job directory that the job can see.
 
-```
-virtual kubelet -> interLink API -> slurm plugin (official image, unchanged)
-                                        | runs sbatch / squeue / scancel / sinfo
-                                        v
-                                    shims --unix socket--> firecrest-bridge --HTTPS--> FirecREST -> Slurm
-                                                              | mirrors the job directory
+```mermaid
+flowchart LR
+  vk["virtual kubelet"] --> api["interLink API"] --> plugin["slurm plugin<br/>(official image, unchanged)"]
+  plugin -- "sbatch, squeue, scancel, sinfo" --> shims["shims"]
+  shims -- "unix socket" --> bridge["firecrest-bridge"]
+  bridge -- HTTPS --> firecrest["FirecREST"] --> slurm["Slurm"]
+  plugin -. "writes and reads" .- jobs[("job directory")]
+  bridge -. "mirrors it on the cluster" .- jobs
 ```
 
 ## How it works
@@ -48,9 +50,10 @@ with the official slurm plugin `0.6.3-pre2` and interLink `0.6.3-pre2`:
   followed logs across a bridge restart, exit codes, ConfigMap, env and
   emptyDir volumes, delete of finished and running jobs with remote cleanup,
   and the same flow with the enroot runtime (Apptainer otherwise).
-- `test/e2e/run.sh`, 10 checks: a pod applied with `kubectl` to the virtual
-  node in kind runs on the FirecREST cluster; `kubectl logs` and
-  `kubectl delete` work.
+- `test/e2e/run.sh`, 10 checks: the virtual node is installed in kind with
+  `helm install` of the interLink chart `0.6.2-pre5`, the bridge coming in
+  through the chart's `extraContainers`; a pod applied with `kubectl` runs on
+  the FirecREST cluster, and `kubectl logs` and `kubectl delete` work.
 
 Not yet run against CSCS.
 
@@ -70,9 +73,13 @@ Needs docker (with compose), kind, helm, kubectl, jq and Go 1.26.
 make test                     # unit tests
 make image                    # firecrest-bridge:dev
 test/integration/run.sh       # FirecREST demo stack + plugin + bridge, then the scenarios
-CHART=/path/to/interlink-helm-chart/interlink test/e2e/run.sh   # kind + interLink + bridge
+test/e2e/run.sh               # kind + helm install of the interLink chart with the bridge
 test/e2e/run.sh down; test/integration/run.sh down
 ```
+
+The e2e test installs the released chart (`CHART_VERSION`, default
+`0.6.2-pre5`); `CHART=/path/to/interlink-helm-chart/interlink` tests a local
+checkout instead.
 
 `test/integration/run.sh` clones `eth-cscs/firecrest-v2` at a pinned commit
 into `~/.cache/firecrest-bridge`, adds Apptainer and enroot to its demo Slurm
@@ -82,59 +89,36 @@ hosts, where it also switches the kubelet to the cgroupfs driver.
 
 ## Deploying
 
-The bridge runs next to the plugin, in the same pod. `deploy/cscs/` is a
-ready-to-fill virtual node for CSCS, and `test/e2e/` the same layout as tested
-in kind, both on top of the interLink helm chart:
+One `helm install` of the interLink chart (0.6.2-pre5 or later) deploys the
+virtual kubelet, the interLink API and the slurm plugin, with the bridge added
+through the chart's `extraInitContainers` and `extraContainers`. Fill the
+`<...>` in `deploy/cscs/values.yaml`, then:
 
-- an init container, `firecrest-bridge install-shims /opt/firecrest-bridge`,
-  copies the binary and the four shims into a volume the plugin mounts;
-- the `firecrest-bridge daemon` container;
-- three shared volumes: the job root (plugin and bridge, same path), the
-  socket directory, and the shims (read-only in the plugin).
-
-Plugin configuration (`SlurmConfig.yaml`), the lines that differ:
-
-```yaml
-SbatchPath: /opt/firecrest-bridge/sbatch
-SqueuePath: /opt/firecrest-bridge/squeue
-ScancelPath: /opt/firecrest-bridge/scancel
-SinfoPath: /opt/firecrest-bridge/sinfo
-DataRootFolder: /capstor/scratch/cscs/<user>/interlink/jobs/   # = bridge JobRoot
-ImagePrefix: "docker://"
-ContainerRuntime: enroot      # Alps runs the enroot-based Container Engine
+```bash
+kubectl create namespace interlink-cscs
+kubectl -n interlink-cscs create secret generic firecrest-client --from-literal=client-secret='<client secret>'
+helm install cscs -n interlink-cscs -f deploy/cscs/values.yaml \
+  https://github.com/interlink-hq/interlink-helm-chart/releases/download/interlink-0.6.2-pre5/interlink-0.6.2-pre5.tgz
 ```
 
-Bridge configuration (`FirecrestConfig.yaml`), for example at CSCS:
+`deploy/cscs/README.md` has the pod layout and the remaining steps.
 
-```yaml
-FirecrestURL: https://api.cscs.ch/hpc/firecrest/v2
-System: daint
-TokenURL: https://auth.cscs.ch/auth/realms/firecrest-clients/protocol/openid-connect/token
-ClientID: <client from the CSCS developer portal>
-ClientSecretFile: /etc/firecrest/client-secret
-Account: <project>
-JobRoot: /capstor/scratch/cscs/<user>/interlink/jobs
-```
+The bridge reads its settings from a file (`daemon --config FirecrestConfig.yaml`)
+or, as in `deploy/cscs/`, from the environment (`daemon --config ''`):
 
-| Key | Default | Meaning |
-|---|---|---|
-| `FirecrestURL`, `System` | | FirecREST v2 base URL and cluster name |
-| `TokenURL`, `ClientID`, `ClientSecret` / `ClientSecretFile` | | OAuth2 client credentials; the token is refreshed before it expires |
-| `APIKey` / `APIKeyFile` | | CSCS service-account key (`X-API-Key`), instead of client credentials |
-| `Account` | | passed to every submission |
-| `JobRoot` | | the plugin's `DataRootFolder`, same absolute path in the pod and on the cluster |
-| `Socket` | `/var/run/firecrest-bridge/bridge.sock` | where the shims connect (`FIRECREST_BRIDGE_SOCKET` for the shims) |
-| `SyncInterval` | `5s` | how often running jobs are pulled |
-| `FinalSyncRounds` | `2` | extra pulls after a job ends |
-| `PingTTL` | `30s` | cache of the liveness check behind `squeue --me` |
-| `UploadParallelism` | `4` | concurrent uploads at submission |
-| `MaxUploadSize` | 5 MiB | FirecREST's direct upload limit |
-| `RequestTimeout` | `60s` | per FirecREST call |
+| Key | Environment | Default | Meaning |
+|---|---|---|---|
+| `FirecrestURL`, `System` | `FIRECREST_URL`, `FIRECREST_SYSTEM` | | FirecREST v2 base URL and cluster name |
+| `TokenURL`, `ClientID`, `ClientSecret` | `FIRECREST_TOKEN_URL`, `FIRECREST_CLIENT_ID`, `FIRECREST_CLIENT_SECRET` | | OAuth2 client credentials, refreshed before they expire |
+| `APIKey` | `FIRECREST_API_KEY` | | CSCS service-account key, instead of client credentials |
+| `Account` | `FIRECREST_ACCOUNT` | | passed to every submission |
+| `JobRoot` | `FIRECREST_JOB_ROOT` | | the plugin's `DataRootFolder`, same absolute path in the pod and on the cluster |
+| `Socket` | `FIRECREST_BRIDGE_SOCKET` | `/var/run/firecrest-bridge/bridge.sock` | where the shims connect |
+| `SyncInterval` | | `5s` | how often running jobs are pulled |
 
-These can also come from the environment (`FIRECREST_URL`,
-`FIRECREST_SYSTEM`, `FIRECREST_TOKEN_URL`, `FIRECREST_CLIENT_ID`,
-`FIRECREST_CLIENT_SECRET`, `FIRECREST_API_KEY`, `FIRECREST_ACCOUNT`,
-`FIRECREST_JOB_ROOT`, `FIRECREST_BRIDGE_SOCKET`).
+`ClientSecretFile` and `APIKeyFile` read the secrets from files; `FinalSyncRounds`,
+`PingTTL`, `UploadParallelism`, `MaxUploadSize` and `RequestTimeout` tune the rest
+(see `pkg/bridge/config.go`).
 
 ## Limitations
 

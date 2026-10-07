@@ -1,5 +1,7 @@
-# interlink-helm-chart values for the kind test: virtual kubelet, interLink API
-# and the official slurm plugin in one pod. kustomization.yaml adds the bridge.
+# interlink-helm-chart values (0.6.2-pre5 or later) for the kind test: virtual
+# kubelet, interLink API and the official slurm plugin in one pod, plus the
+# bridge as an extra container and its shim installer as an init container.
+# Only the firecrest-client Secret is created outside the chart (run.sh).
 nodeName: firecrest-node
 
 interlink:
@@ -61,6 +63,45 @@ plugin:
         MemoryDefault: 400M
         SlurmFlags:
           - --partition=part01
+
+extraInitContainers:
+  - name: install-shims
+    image: firecrest-bridge:dev
+    imagePullPolicy: Never
+    args: ["install-shims", "/opt/firecrest-bridge"]
+    volumeMounts:
+      - name: bridge-shims
+        mountPath: /opt/firecrest-bridge
+
+# The bridge reads its configuration from the environment ("--config ''"):
+# FirecREST's demo stack, reached at its fixed addresses on the network the
+# kind node is attached to.
+extraContainers:
+  - name: firecrest-bridge
+    image: firecrest-bridge:dev
+    imagePullPolicy: Never
+    args: ["daemon", "--config", ""]
+    env:
+      - name: FIRECREST_URL
+        value: http://192.168.240.10:5000
+      - name: FIRECREST_SYSTEM
+        value: cluster-slurm-ssh
+      - name: FIRECREST_TOKEN_URL
+        value: http://192.168.240.3:8080/auth/realms/kcrealm/protocol/openid-connect/token
+      - name: FIRECREST_CLIENT_ID
+        value: firecrest-test-client
+      - name: FIRECREST_CLIENT_SECRET
+        valueFrom:
+          secretKeyRef:
+            name: firecrest-client
+            key: client-secret
+      - name: FIRECREST_JOB_ROOT
+        value: /home/fireuser/interlink/jobs
+    volumeMounts:
+      - name: jobs
+        mountPath: /home/fireuser/interlink/jobs
+      - name: bridge-socket
+        mountPath: /var/run/firecrest-bridge
 
 extraVolumes:
   - name: jobs
