@@ -1,0 +1,55 @@
+# Kyverno Policy for the namespace whose pods run on the virtual node, which
+# advertises zero CPU and memory (values.yaml, ResourceScriptPath). The slurm
+# plugin sizes the Slurm job from limits, so a request becomes the limit when
+# the container sets none, and requests become 0 so the pod fits the node.
+# Apply with: kubectl -n <namespace> apply -f sizing-policy.yaml
+apiVersion: kyverno.io/v1
+kind: Policy
+metadata:
+  name: firecrest-node-sizing
+spec:
+  background: false
+  rules:
+    - name: limits-from-requests
+      match:
+        any:
+          - resources:
+              kinds: ["Pod"]
+              operations: ["CREATE"]
+      preconditions:
+        all:
+          - key: "{{ request.object.spec.nodeSelector.\"kubernetes.io/hostname\" || '' }}"
+            operator: Equals
+            value: cscs-firecrest
+      mutate:
+        foreach:
+          - list: request.object.spec.containers
+            preconditions:
+              all:
+                - key: "{{ element.resources.limits.cpu || element.resources.requests.cpu || '' }}"
+                  operator: NotEquals
+                  value: ""
+            patchStrategicMerge:
+              spec:
+                containers:
+                  - (name): "{{ element.name }}"
+                    resources:
+                      limits:
+                        cpu: "{{ element.resources.limits.cpu || element.resources.requests.cpu }}"
+                      requests:
+                        cpu: "0"
+          - list: request.object.spec.containers
+            preconditions:
+              all:
+                - key: "{{ element.resources.limits.memory || element.resources.requests.memory || '' }}"
+                  operator: NotEquals
+                  value: ""
+            patchStrategicMerge:
+              spec:
+                containers:
+                  - (name): "{{ element.name }}"
+                    resources:
+                      limits:
+                        memory: "{{ element.resources.limits.memory || element.resources.requests.memory }}"
+                      requests:
+                        memory: "0"

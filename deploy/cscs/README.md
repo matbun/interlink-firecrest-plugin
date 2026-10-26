@@ -27,19 +27,25 @@ flowchart TB
   run as the user who owns it.
 - A project with compute time on the target system, for `FIRECREST_ACCOUNT`.
 - Outbound HTTPS from the cluster to `api.cscs.ch` and `auth.cscs.ch`.
+- Kyverno, for `sizing-policy.yaml` (optional, see "Run a pod there").
 
 ## Deploy
 
 1. Fill every `<...>` in `values.yaml`. The job root path appears four times
    (`DataRootFolder`, `FIRECREST_JOB_ROOT` and the two `jobs` mounts) and must
    be identical in all of them.
-2. Create the namespace and the Secret with the client secret, the only object
-   the chart does not create:
+2. Create the namespace and the Secret with the bridge's settings, the only
+   object the chart does not create. Jobs are charged to `FIRECREST_ACCOUNT`.
 
    ```bash
    kubectl create namespace interlink-cscs
-   kubectl -n interlink-cscs create secret generic firecrest-client \
-     --from-literal=client-secret='<client secret>'
+   kubectl -n interlink-cscs create secret generic firecrest-env \
+     --from-literal=FIRECREST_URL=https://api.cscs.ch/hpc/firecrest/v2 \
+     --from-literal=FIRECREST_TOKEN_URL=https://auth.cscs.ch/auth/realms/firecrest-clients/protocol/openid-connect/token \
+     --from-literal=FIRECREST_SYSTEM='<system, e.g. daint>' \
+     --from-literal=FIRECREST_ACCOUNT='<project>' \
+     --from-literal=FIRECREST_CLIENT_ID='<client id>' \
+     --from-literal=FIRECREST_CLIENT_SECRET='<client secret>'
    ```
 
 3. Install:
@@ -71,6 +77,20 @@ spec:
     - key: virtual-node.interlink/no-schedule
       operator: Exists
 ```
+
+The virtual node advertises zero CPU and memory, so it adds nothing to
+anything that scales with cluster capacity, and the scheduler places a pod
+there only if its CPU and memory requests are 0. The slurm plugin sizes the
+Slurm job from the limits: without a memory limit it submits `--mem=1` (1 MB).
+`sizing-policy.yaml` does both for every pod that selects the node: a request
+becomes the limit when the container sets none, and requests become 0.
+
+```bash
+kubectl -n <namespace> apply -f sizing-policy.yaml
+```
+
+Without Kyverno, write the pod's resources that way yourself
+(`requests: {cpu: "0", memory: "0"}` and the size in `limits`).
 
 ## Known limits
 

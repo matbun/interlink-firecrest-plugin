@@ -13,11 +13,10 @@ interlink:
 
 virtualNode:
   image: ghcr.io/interlink-hq/interlink/virtual-kubelet-inttw:0.6.3-pre2
-  # What the virtual node advertises to the scheduler; size it to the
-  # allocation, not to the machine.
+  # Zero CPU and memory, see ResourceScriptPath below.
   resources:
-    CPUs: 64
-    memGiB: 256
+    CPUs: 0
+    memGiB: 0
     pods: 100
 
 plugin:
@@ -53,6 +52,12 @@ plugin:
     ExportPodData: true
     Namespace: vk
     BashPath: /bin/bash
+    # The virtual node advertises what this prints. The bridge's sinfo reports
+    # the whole machine (45824 CPUs on Eiger), and a cluster-proportional
+    # CoreDNS autoscaler adds a replica per 256 advertised cores. With zero, a
+    # pod fits only with CPU and memory requests at 0; the plugin sizes the
+    # Slurm job from limits (sizing-policy.yaml sets both).
+    ResourceScriptPath: "echo '{\"status\":\"ok\",\"resources\":{\"cpu\":\"0\",\"memory\":\"0\",\"pods\":\"100\"}}'"
     # Alps runs the enroot-based Container Engine, not Apptainer.
     ContainerRuntime: enroot
     EnrootPath: enroot
@@ -77,29 +82,18 @@ extraInitContainers:
       - name: bridge-shims
         mountPath: /opt/firecrest-bridge
 
-# The bridge takes its configuration from the environment ("--config ''");
-# the client secret comes from the firecrest-client Secret, created beforehand.
+# The bridge takes its configuration from the environment ("--config ''"):
+# FIRECREST_URL, _TOKEN_URL, _SYSTEM, _ACCOUNT, _CLIENT_ID and _CLIENT_SECRET
+# come from the firecrest-env Secret, created beforehand (README).
 extraContainers:
   - name: firecrest-bridge
     image: registry.cern.ch/interlink/firecrest-bridge:0.1.0
     args: ["daemon", "--config", ""]
+    envFrom:
+      - secretRef:
+          name: firecrest-env
     env:
-      - name: FIRECREST_URL
-        value: https://api.cscs.ch/hpc/firecrest/v2
-      - name: FIRECREST_SYSTEM
-        value: "<system, e.g. daint>"
-      - name: FIRECREST_TOKEN_URL
-        value: https://auth.cscs.ch/auth/realms/firecrest-clients/protocol/openid-connect/token
-      - name: FIRECREST_CLIENT_ID
-        value: "<client id from the CSCS Developer Portal>"
-      - name: FIRECREST_CLIENT_SECRET
-        valueFrom:
-          secretKeyRef:
-            name: firecrest-client
-            key: client-secret
-      # Passed to every job as --account.
-      - name: FIRECREST_ACCOUNT
-        value: "<project>"
+      # Must match DataRootFolder; the render check compares them.
       - name: FIRECREST_JOB_ROOT
         value: /capstor/scratch/cscs/<user>/interlink/jobs
     resources:

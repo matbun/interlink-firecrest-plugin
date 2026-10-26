@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Renders the interLink chart with every values file of this repo and checks
 # the virtual node pod: the bridge and its shim installer are there, the plugin
-# runs the shims, and the job root is the same path everywhere it is set. No
-# cluster needed.
+# runs the shims, the bridge's settings come from a Secret, and the job root
+# is the same path everywhere it is set. No cluster needed.
 #
 #   run.sh [values.yaml ...]   default: deploy/*/values.yaml and test/e2e/values.yaml
 set -euo pipefail
@@ -60,6 +60,10 @@ for values in "$@"; do
 		equal "$(yq "$plugin | .volumeMounts[] | select(.name == \"jobs\") | .mountPath" <<<"$deploy")" "$root"
 	check "bridge mounts jobs at DataRootFolder" \
 		equal "$(yq "$bridge | .volumeMounts[] | select(.name == \"jobs\") | .mountPath" <<<"$deploy")" "$root"
+	check "bridge reads its settings from a Secret (envFrom)" \
+		equal "$(yq "$bridge | .envFrom[].secretRef.name" <<<"$deploy" | grep -c .)" 1
+	check "bridge sets no FIRECREST_* literal but the job root" \
+		equal "$(yq "$bridge | .env[].name" <<<"$deploy" | grep '^FIRECREST_' | grep -vx FIRECREST_JOB_ROOT | wc -l)" 0
 	check "plugin and bridge share the socket directory" \
 		equal "$(yq "$plugin | .volumeMounts[] | select(.name == \"bridge-socket\") | .mountPath" <<<"$deploy")" \
 		"$(yq "$bridge | .volumeMounts[] | select(.name == \"bridge-socket\") | .mountPath" <<<"$deploy")"
