@@ -2,11 +2,17 @@
 # advertises zero CPU and memory (values.yaml, ResourceScriptPath). The slurm
 # plugin sizes the Slurm job from limits, so a request becomes the limit when
 # the container sets none, and requests become 0 so the pod fits the node.
+# Init containers too: the scheduler counts the largest of their requests.
+# The value cscs-firecrest is values.yaml's nodeName (the render check
+# compares them). Autogen is off so Job and Deployment templates keep their
+# requests, which is what Kueue counts against its quota.
 # Apply with: kubectl -n <namespace> apply -f sizing-policy.yaml
 apiVersion: kyverno.io/v1
 kind: Policy
 metadata:
   name: firecrest-node-sizing
+  annotations:
+    pod-policies.kyverno.io/autogen-controllers: none
 spec:
   background: false
   rules:
@@ -47,6 +53,36 @@ spec:
             patchStrategicMerge:
               spec:
                 containers:
+                  - (name): "{{ element.name }}"
+                    resources:
+                      limits:
+                        memory: "{{ element.resources.limits.memory || element.resources.requests.memory }}"
+                      requests:
+                        memory: "0"
+          - list: "request.object.spec.initContainers || `[]`"
+            preconditions:
+              all:
+                - key: "{{ element.resources.limits.cpu || element.resources.requests.cpu || '' }}"
+                  operator: NotEquals
+                  value: ""
+            patchStrategicMerge:
+              spec:
+                initContainers:
+                  - (name): "{{ element.name }}"
+                    resources:
+                      limits:
+                        cpu: "{{ element.resources.limits.cpu || element.resources.requests.cpu }}"
+                      requests:
+                        cpu: "0"
+          - list: "request.object.spec.initContainers || `[]`"
+            preconditions:
+              all:
+                - key: "{{ element.resources.limits.memory || element.resources.requests.memory || '' }}"
+                  operator: NotEquals
+                  value: ""
+            patchStrategicMerge:
+              spec:
+                initContainers:
                   - (name): "{{ element.name }}"
                     resources:
                       limits:

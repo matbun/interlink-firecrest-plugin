@@ -2,7 +2,9 @@
 # Renders the interLink chart with every values file of this repo and checks
 # the virtual node pod: the bridge and its shim installer are there, the plugin
 # runs the shims, the bridge's settings come from a Secret, and the job root
-# is the same path everywhere it is set. No cluster needed.
+# is the same path everywhere it is set. Next to a sizing-policy.yaml, also
+# that the node advertises zero CPU and memory and the policy names it. No
+# cluster needed.
 #
 #   run.sh [values.yaml ...]   default: deploy/*/values.yaml and test/e2e/values.yaml
 set -euo pipefail
@@ -67,6 +69,19 @@ for values in "$@"; do
 	check "plugin and bridge share the socket directory" \
 		equal "$(yq "$plugin | .volumeMounts[] | select(.name == \"bridge-socket\") | .mountPath" <<<"$deploy")" \
 		"$(yq "$bridge | .volumeMounts[] | select(.name == \"bridge-socket\") | .mountPath" <<<"$deploy")"
+
+	policy=$(dirname "$values")/sizing-policy.yaml
+	if [ -f "$policy" ]; then
+		node=$(yq '.nodeName' "$values")
+		check "sizing-policy.yaml names the node ($node)" \
+			equal "$(yq '.spec.rules[0].preconditions.all[0].value' "$policy")" "$node"
+		check "node starts with zero CPU and memory" \
+			equal "$(yq '.virtualNode.resources.CPUs + "/" + .virtualNode.resources.memGiB' "$values")" "0/0"
+		# ResourceScriptPath is "echo '<ping JSON>'"; read the JSON without running it.
+		ping=$(sed -n "s/^echo '\(.*\)'$/\1/p" <<<"$(yq '.ResourceScriptPath' <<<"$config")")
+		check "plugin reports zero CPU and memory" \
+			equal "$(jq -r '.resources.cpu + "/" + .resources.memory' <<<"$ping" 2>/dev/null)" "0/0"
+	fi
 done
 
 [ "$FAIL" -eq 0 ] && echo "all values files render" || { echo "render checks failed"; exit 1; }

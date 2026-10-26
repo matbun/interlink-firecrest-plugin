@@ -36,16 +36,21 @@ flowchart TB
    be identical in all of them.
 2. Create the namespace and the Secret with the bridge's settings, the only
    object the chart does not create. Jobs are charged to `FIRECREST_ACCOUNT`.
+   Write the settings to a file only you can read, so the client secret stays
+   out of your shell history:
 
    ```bash
+   cat > firecrest.env <<'EOF'
+   FIRECREST_URL=https://api.cscs.ch/hpc/firecrest/v2
+   FIRECREST_TOKEN_URL=https://auth.cscs.ch/auth/realms/firecrest-clients/protocol/openid-connect/token
+   FIRECREST_SYSTEM=<system, e.g. daint>
+   FIRECREST_ACCOUNT=<project>
+   FIRECREST_CLIENT_ID=<client id>
+   FIRECREST_CLIENT_SECRET=<client secret>
+   EOF
+   chmod 600 firecrest.env
    kubectl create namespace interlink-cscs
-   kubectl -n interlink-cscs create secret generic firecrest-env \
-     --from-literal=FIRECREST_URL=https://api.cscs.ch/hpc/firecrest/v2 \
-     --from-literal=FIRECREST_TOKEN_URL=https://auth.cscs.ch/auth/realms/firecrest-clients/protocol/openid-connect/token \
-     --from-literal=FIRECREST_SYSTEM='<system, e.g. daint>' \
-     --from-literal=FIRECREST_ACCOUNT='<project>' \
-     --from-literal=FIRECREST_CLIENT_ID='<client id>' \
-     --from-literal=FIRECREST_CLIENT_SECRET='<client secret>'
+   kubectl -n interlink-cscs create secret generic firecrest-env --from-env-file=firecrest.env
    ```
 
 3. Install:
@@ -83,7 +88,10 @@ anything that scales with cluster capacity, and the scheduler places a pod
 there only if its CPU and memory requests are 0. The slurm plugin sizes the
 Slurm job from the limits: without a memory limit it submits `--mem=1` (1 MB).
 `sizing-policy.yaml` does both for every pod that selects the node: a request
-becomes the limit when the container sets none, and requests become 0.
+becomes the limit when the container (or init container) sets none, and
+requests become 0. It names the node, so change it with `nodeName`. It
+mutates pods only, not Job or Deployment templates, so Kueue still counts the
+requests written there (not tested with Kueue yet).
 
 ```bash
 kubectl -n <namespace> apply -f sizing-policy.yaml

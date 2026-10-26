@@ -3,6 +3,7 @@
 # the official slurm plugin in one pod, plus the bridge as an extra container.
 # Fill in every <...> before installing. The job root path must be the same in
 # all four places it appears.
+# sizing-policy.yaml names this node too; the render check compares them.
 nodeName: cscs-firecrest
 
 interlink:
@@ -53,8 +54,8 @@ plugin:
     Namespace: vk
     BashPath: /bin/bash
     # The virtual node advertises what this prints. The bridge's sinfo reports
-    # the whole machine (45824 CPUs on Eiger), and a cluster-proportional
-    # CoreDNS autoscaler adds a replica per 256 advertised cores. With zero, a
+    # the whole machine, and a cluster-proportional CoreDNS autoscaler adds a
+    # replica per 256 advertised cores. With zero, a
     # pod fits only with CPU and memory requests at 0; the plugin sizes the
     # Slurm job from limits (sizing-policy.yaml sets both).
     ResourceScriptPath: "echo '{\"status\":\"ok\",\"resources\":{\"cpu\":\"0\",\"memory\":\"0\",\"pods\":\"100\"}}'"
@@ -69,8 +70,6 @@ plugin:
       default:
         Name: default
         Description: CPU job on Alps
-        CPUDefault: 8
-        MemoryDefault: 32G
         SlurmFlags:
           - --partition=<partition>
 
