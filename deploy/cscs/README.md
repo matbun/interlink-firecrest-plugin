@@ -36,19 +36,23 @@ flowchart TB
    be identical in all of them.
 2. Create the namespace and the Secret with the bridge's settings, the only
    object the chart does not create. Jobs are charged to `FIRECREST_ACCOUNT`.
-   Write the settings to a file only you can read, so the client secret stays
-   out of your shell history:
+   Create a file only you can read and fill it with an editor, so the client
+   secret never goes through your shell history:
 
    ```bash
-   cat > firecrest.env <<'EOF'
+   install -m 600 /dev/null firecrest.env
+   ```
+
+   ```
    FIRECREST_URL=https://api.cscs.ch/hpc/firecrest/v2
    FIRECREST_TOKEN_URL=https://auth.cscs.ch/auth/realms/firecrest-clients/protocol/openid-connect/token
-   FIRECREST_SYSTEM=<system, e.g. daint>
+   FIRECREST_SYSTEM=<system>
    FIRECREST_ACCOUNT=<project>
    FIRECREST_CLIENT_ID=<client id>
    FIRECREST_CLIENT_SECRET=<client secret>
-   EOF
-   chmod 600 firecrest.env
+   ```
+
+   ```bash
    kubectl create namespace interlink-cscs
    kubectl -n interlink-cscs create secret generic firecrest-env --from-env-file=firecrest.env
    ```
@@ -90,8 +94,9 @@ Slurm job from the limits: without a memory limit it submits `--mem=1` (1 MB).
 `sizing-policy.yaml` does both for every pod that selects the node: a request
 becomes the limit when the container (or init container) sets none, and
 requests become 0. It names the node, so change it with `nodeName`. It
-mutates pods only, not Job or Deployment templates, so Kueue still counts the
-requests written there (not tested with Kueue yet).
+mutates pods only, so a Job's template keeps its requests, which Kueue counts
+for Job-based workloads; Kueue sees Deployment and StatefulSet pods as plain
+pods, after the policy. Not tested with Kueue yet.
 
 ```bash
 kubectl -n <namespace> apply -f sizing-policy.yaml
