@@ -14,6 +14,7 @@ services:
     command: ["daemon", "--config", "/etc/interlink/FirecrestConfig.yaml", "--verbose"]
     volumes:
       - ./FirecrestConfig.yaml:/etc/interlink/FirecrestConfig.yaml:ro
+      - ./client-secret:/etc/interlink/client-secret:ro
       - jobs:/home/fireuser/interlink/jobs
       - socket:/var/run/firecrest-bridge
     networks:

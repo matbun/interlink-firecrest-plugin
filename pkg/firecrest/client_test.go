@@ -19,16 +19,16 @@ func newTestServer(t *testing.T, h http.HandlerFunc) (*httptest.Server, *atomic.
 		if err := r.ParseForm(); err != nil {
 			t.Fatal(err)
 		}
-		if r.Form.Get("grant_type") != "client_credentials" || r.Form.Get("client_id") != "cid" || r.Form.Get("client_secret") != "sec" {
+		if r.Form.Get("grant_type") != "client_credentials" || r.Form.Get("client_id") != "cid" || r.Form.Get("client_secret") != "my-secret" {
 			http.Error(w, "bad client", http.StatusUnauthorized)
 			return
 		}
 		tokens.Add(1)
 		w.Header().Set("Content-Type", "application/json")
-		io.WriteString(w, `{"access_token":"tok","token_type":"Bearer","expires_in":300}`)
+		io.WriteString(w, `{"access_token":"my-access-token","token_type":"Bearer","expires_in":300}`)
 	})
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("Authorization") != "Bearer tok" && r.Header.Get("X-API-Key") != "key" {
+		if r.Header.Get("Authorization") != "Bearer my-access-token" && r.Header.Get("X-API-Key") != "my-api-key" {
 			http.Error(w, `{"message":"no auth"}`, http.StatusUnauthorized)
 			return
 		}
@@ -42,7 +42,7 @@ func newTestServer(t *testing.T, h http.HandlerFunc) (*httptest.Server, *atomic.
 func newTestClient(t *testing.T, srv *httptest.Server) *Client {
 	t.Helper()
 	c, err := New(context.Background(), Options{
-		URL: srv.URL, System: "sys", TokenURL: srv.URL + "/token", ClientID: "cid", ClientSecret: "sec",
+		URL: srv.URL, System: "sys", TokenURL: srv.URL + "/token", ClientID: "cid", ClientSecret: "my-secret",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -160,7 +160,7 @@ func TestAPIKeyAuth(t *testing.T) {
 	srv, tokens := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
 		io.WriteString(w, `{"user":{"name":"svc"}}`)
 	})
-	c, err := New(context.Background(), Options{URL: srv.URL, System: "sys", APIKey: "key"})
+	c, err := New(context.Background(), Options{URL: srv.URL, System: "sys", APIKey: "my-api-key"})
 	if err != nil {
 		t.Fatal(err)
 	}

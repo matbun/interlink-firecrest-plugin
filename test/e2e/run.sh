@@ -31,14 +31,16 @@ up() {
 	docker network connect "$F7T_NET" "$CLUSTER-control-plane" 2>/dev/null || true
 	kind load docker-image --name "$CLUSTER" "$BRIDGE_IMAGE"
 	kubectl create namespace interlink --dry-run=client -o yaml | kubectl apply -f -
-	# The bridge's settings for the demo stack; the secret is firecrest-test-client's
-	# (firecrest-v2 docker-compose.yml).
+	# The bridge's settings for the demo stack; the client secret is the file that
+	# test/integration/run.sh writes from the stack's Keycloak configuration.
+	secret=$HERE/../integration/client-secret
+	[ -s "$secret" ] || { echo "no $secret: run test/integration/run.sh up first" >&2; exit 1; }
 	kubectl -n interlink create secret generic firecrest-env \
 		--from-literal=FIRECREST_URL=http://192.168.240.10:5000 \
 		--from-literal=FIRECREST_SYSTEM=cluster-slurm-ssh \
 		--from-literal=FIRECREST_TOKEN_URL=http://192.168.240.3:8080/auth/realms/kcrealm/protocol/openid-connect/token \
 		--from-literal=FIRECREST_CLIENT_ID=firecrest-test-client \
-		--from-literal=FIRECREST_CLIENT_SECRET=wZVHVIEd9dkJDh9hMKc6DTvkqXxnDttk \
+		--from-file=FIRECREST_CLIENT_SECRET="$secret" \
 		--dry-run=client -o yaml | kubectl apply -f -
 	# The chart comes from a URL or a path: no helm repositories needed, and none
 	# of the local ones (a missing index cache there makes helm fail).
