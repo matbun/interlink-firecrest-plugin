@@ -36,3 +36,6 @@ bin/
 
 # Test artifacts
 test/e2e/.kubeconfig
+
+# Written by test/integration/run.sh from the FirecREST demo stack
+test/integration/client-secret

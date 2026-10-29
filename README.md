@@ -102,7 +102,8 @@ through the chart's `extraInitContainers` and `extraContainers`. Fill the
 
 ```bash
 kubectl create namespace interlink-cscs
-kubectl -n interlink-cscs create secret generic firecrest-client --from-literal=client-secret='<client secret>'
+# firecrest.env: FIRECREST_URL, _TOKEN_URL, _SYSTEM, _ACCOUNT, _CLIENT_ID, _CLIENT_SECRET
+kubectl -n interlink-cscs create secret generic firecrest-env --from-env-file=firecrest.env
 helm install cscs -n interlink-cscs -f deploy/cscs/values.yaml \
   https://github.com/interlink-hq/interlink-helm-chart/releases/download/interlink-0.6.2-pre5/interlink-0.6.2-pre5.tgz
 ```

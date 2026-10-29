@@ -28,6 +28,10 @@ up() {
 		git clone -q https://github.com/eth-cscs/firecrest-v2 "$F7T_DIR"
 	fi
 	git -C "$F7T_DIR" checkout -q "$F7T_REF"
+	# The demo client's secret, read from the stack's own Keycloak configuration so
+	# that no secret value is kept in this repository; the e2e test reads it too.
+	(umask 077 && jq -er '.clients[] | select(.clientId == "firecrest-test-client") | .secret' \
+		"$F7T_DIR/build/docker/keycloak/config.json" | tr -d '\n' >"$HERE/client-secret")
 	# Build FirecREST's images without the runtime overlay: with it, compose
 	# would build the stock demo cluster under the overlay's image name.
 	(cd "$F7T_DIR" && docker compose -p f7t -f docker-compose.yml -f "$HERE/firecrest-build.yaml" build firecrest slurm)

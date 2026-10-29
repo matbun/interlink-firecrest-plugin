@@ -27,19 +27,34 @@ flowchart TB
   run as the user who owns it.
 - A project with compute time on the target system, for `FIRECREST_ACCOUNT`.
 - Outbound HTTPS from the cluster to `api.cscs.ch` and `auth.cscs.ch`.
+- Kyverno, for `sizing-policy.yaml` (optional, see "Run a pod there").
 
 ## Deploy
 
 1. Fill every `<...>` in `values.yaml`. The job root path appears four times
    (`DataRootFolder`, `FIRECREST_JOB_ROOT` and the two `jobs` mounts) and must
    be identical in all of them.
-2. Create the namespace and the Secret with the client secret, the only object
-   the chart does not create:
+2. Create the namespace and the Secret with the bridge's settings, the only
+   object the chart does not create. Jobs are charged to `FIRECREST_ACCOUNT`.
+   Create a file only you can read and fill it with an editor, so the client
+   secret never goes through your shell history:
+
+   ```bash
+   install -m 600 /dev/null firecrest.env
+   ```
+
+   ```
+   FIRECREST_URL=https://api.cscs.ch/hpc/firecrest/v2
+   FIRECREST_TOKEN_URL=https://auth.cscs.ch/auth/realms/firecrest-clients/protocol/openid-connect/token
+   FIRECREST_SYSTEM=<system>
+   FIRECREST_ACCOUNT=<project>
+   FIRECREST_CLIENT_ID=<client id>
+   FIRECREST_CLIENT_SECRET=<client secret>
+   ```
 
    ```bash
    kubectl create namespace interlink-cscs
-   kubectl -n interlink-cscs create secret generic firecrest-client \
-     --from-literal=client-secret='<client secret>'
+   kubectl -n interlink-cscs create secret generic firecrest-env --from-env-file=firecrest.env
    ```
 
 3. Install:
@@ -71,6 +86,24 @@ spec:
     - key: virtual-node.interlink/no-schedule
       operator: Exists
 ```
+
+The virtual node advertises zero CPU and memory, so it adds nothing to
+anything that scales with cluster capacity, and the scheduler places a pod
+there only if its CPU and memory requests are 0. The slurm plugin sizes the
+Slurm job from the limits: without a memory limit it submits `--mem=1` (1 MB).
+`sizing-policy.yaml` does both for every pod that selects the node: a request
+becomes the limit when the container (or init container) sets none, and
+requests become 0. It names the node, so change it with `nodeName`. It
+mutates pods only, so a Job's template keeps its requests, which Kueue counts
+for Job-based workloads; Kueue sees Deployment and StatefulSet pods as plain
+pods, after the policy. Not tested with Kueue yet.
+
+```bash
+kubectl -n <namespace> apply -f sizing-policy.yaml
+```
+
+Without Kyverno, write the pod's resources that way yourself
+(`requests: {cpu: "0", memory: "0"}` and the size in `limits`).
 
 ## Known limits
 

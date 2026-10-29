@@ -1,0 +1,64 @@
+# Kyverno Policy for the namespace whose pods run on the virtual node, which
+# advertises zero CPU and memory (values.yaml, ResourceScriptPath). The slurm
+# plugin sizes the Slurm job from limits, so a CPU or memory request becomes
+# the limit when the container sets none, and those requests become 0 so the
+# pod fits the node. Init containers too: the scheduler counts the largest of
+# their requests. Other resources (GPUs) are left as they are.
+# The value cscs-firecrest is values.yaml's nodeName (the render check
+# compares them). Autogen is off, so Job templates keep their requests, which
+# Kueue counts for Job-based workloads.
+# A JSON patch by index keeps the container order (a strategic merge patch
+# moves the patched containers first, and kubectl logs picks the first).
+# Apply with: kubectl -n <namespace> apply -f sizing-policy.yaml
+apiVersion: kyverno.io/v1
+kind: Policy
+metadata:
+  name: firecrest-node-sizing
+  annotations:
+    pod-policies.kyverno.io/autogen-controllers: none
+spec:
+  background: false
+  rules:
+    - name: limits-from-requests
+      match:
+        any:
+          - resources:
+              kinds: ["Pod"]
+              operations: ["CREATE"]
+      preconditions:
+        all:
+          - key: "{{ request.object.spec.nodeSelector.\"kubernetes.io/hostname\" || '' }}"
+            operator: Equals
+            value: cscs-firecrest
+      mutate:
+        foreach:
+          - list: request.object.spec.containers
+            context:
+              - name: sized
+                variable:
+                  jmesPath: >-
+                    {limits: merge(element.resources.limits || `{}`,
+                    (element.resources.limits.cpu || element.resources.requests.cpu) && {cpu: element.resources.limits.cpu || element.resources.requests.cpu} || `{}`,
+                    (element.resources.limits.memory || element.resources.requests.memory) && {memory: element.resources.limits.memory || element.resources.requests.memory} || `{}`),
+                    requests: merge(element.resources.requests || `{}`,
+                    (element.resources.limits.cpu || element.resources.requests.cpu) && `{"cpu": "0"}` || `{}`,
+                    (element.resources.limits.memory || element.resources.requests.memory) && `{"memory": "0"}` || `{}`)}
+            patchesJson6902: |-
+              - op: add
+                path: /spec/containers/{{elementIndex}}/resources
+                value: {{ sized }}
+          - list: "request.object.spec.initContainers || `[]`"
+            context:
+              - name: sized
+                variable:
+                  jmesPath: >-
+                    {limits: merge(element.resources.limits || `{}`,
+                    (element.resources.limits.cpu || element.resources.requests.cpu) && {cpu: element.resources.limits.cpu || element.resources.requests.cpu} || `{}`,
+                    (element.resources.limits.memory || element.resources.requests.memory) && {memory: element.resources.limits.memory || element.resources.requests.memory} || `{}`),
+                    requests: merge(element.resources.requests || `{}`,
+                    (element.resources.limits.cpu || element.resources.requests.cpu) && `{"cpu": "0"}` || `{}`,
+                    (element.resources.limits.memory || element.resources.requests.memory) && `{"memory": "0"}` || `{}`)}
+            patchesJson6902: |-
+              - op: add
+                path: /spec/initContainers/{{elementIndex}}/resources
+                value: {{ sized }}
