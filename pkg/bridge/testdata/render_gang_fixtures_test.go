@@ -1,5 +1,7 @@
-// Renders gang-*.slurm with the slurm plugin's own gang generator. The go tool
-// ignores testdata: copy this file into the plugin's pkg/slurm and run
+// Renders gang-*.slurm with the slurm plugin's own gang generator, which exists only
+// on the plugin's gang branch (interlink-slurm-plugin demo/gang, rendered at 496565e),
+// not on upstream main. The go tool ignores testdata: copy this file into that
+// checkout's pkg/slurm and run
 //
 //	FIXTURE_OUT=<this directory> go test ./pkg/slurm -run TestRenderBridgeFixtures -count=1
 package slurm
