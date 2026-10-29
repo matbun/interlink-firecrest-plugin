@@ -127,9 +127,15 @@ or, as in `deploy/cscs/`, from the environment (`daemon --config ''`):
 | `Socket` | `FIRECREST_BRIDGE_SOCKET` | `/var/run/firecrest-bridge/bridge.sock` | where the shims connect |
 | `SyncInterval` | | `5s` | how often running jobs are pulled |
 
-`ClientSecretFile` and `APIKeyFile` read the secrets from files; `FinalSyncRounds`,
-`PingTTL`, `UploadParallelism`, `MaxUploadSize` and `RequestTimeout` tune the rest
-(see `pkg/bridge/config.go`).
+`ClientIDFile`, `ClientSecretFile`, `APIKeyFile` and `AccountFile` (environment
+`FIRECREST_CLIENT_ID_FILE`, `FIRECREST_CLIENT_SECRET_FILE`, `FIRECREST_API_KEY_FILE`,
+`FIRECREST_ACCOUNT_FILE`) read those values from files, such as a mounted Secret; a value
+set directly wins over its file. `FinalSyncRounds`, `PingTTL`, `UploadParallelism`,
+`MaxUploadSize` and `RequestTimeout` tune the rest (see `pkg/bridge/config.go`).
+
+`firecrest-bridge rm <path>...`, with the same settings, removes directories on the
+cluster below `JobRoot` (for example a tenant's whole job root once nothing of it runs);
+it refuses any other path. The daemon removes each job's own directory by itself.
 
 ## Limitations
 
