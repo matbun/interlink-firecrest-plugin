@@ -17,6 +17,7 @@ type fakeRemote struct {
 	mu      sync.Mutex
 	files   map[string]*fakeFile
 	dirs    map[string]bool
+	links   map[string]string // link -> target
 	jobs    map[string]*firecrest.Job
 	nextID  int
 	clock   int
@@ -24,6 +25,9 @@ type fakeRemote struct {
 	views   []viewCall
 	removed []string
 	pings   int
+	gets    int
+	lsCalls int
+	onLs    func(path string) // runs before each Ls, as if during the call
 	nodes   []firecrest.Node
 	parts   []firecrest.Partition
 }
@@ -43,6 +47,7 @@ func newFakeRemote() *fakeRemote {
 	return &fakeRemote{
 		files: map[string]*fakeFile{},
 		dirs:  map[string]bool{"/": true},
+		links: map[string]string{},
 		jobs:  map[string]*firecrest.Job{},
 		nodes: []firecrest.Node{
 			{Name: "nid001", CPUs: 2, AllocCPUs: 1, FreeMemory: 15650, AllocMemory: 1000, State: []string{"MIXED"}, Partitions: []string{"normal", "debug"}},
@@ -67,6 +72,13 @@ func (f *fakeRemote) write(path, content string) {
 			break
 		}
 	}
+}
+
+// link makes path a symbolic link to target, as `ln -sfn` in a batch script.
+func (f *fakeRemote) link(path, target string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.links[path] = target
 }
 
 func (f *fakeRemote) read(path string) (string, bool) {
@@ -101,6 +113,7 @@ func (f *fakeRemote) SubmitJob(_ context.Context, spec firecrest.JobSpec) (strin
 func (f *fakeRemote) GetJob(_ context.Context, id string) (*firecrest.Job, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.gets++
 	j, ok := f.jobs[id]
 	if !ok {
 		return nil, notFound("/compute/sys/jobs/" + id)
@@ -138,9 +151,13 @@ func (f *fakeRemote) UserInfo(context.Context) (string, error) {
 	return "fireuser", nil
 }
 
-func (f *fakeRemote) Ls(_ context.Context, path string, recursive bool) ([]firecrest.Entry, error) {
+func (f *fakeRemote) Ls(_ context.Context, path string, recursive, dereference bool) ([]firecrest.Entry, error) {
+	if f.onLs != nil {
+		f.onLs(path)
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.lsCalls++
 	if !f.dirs[path] {
 		return nil, notFound(path)
 	}
@@ -167,6 +184,25 @@ func (f *fakeRemote) Ls(_ context.Context, path string, recursive bool) ([]firec
 				LastModified: fmt.Sprintf("mtime-%d", file.mtime),
 			})
 		}
+	}
+	for p, target := range f.links {
+		rel, ok := under(p)
+		if !ok {
+			continue
+		}
+		if !dereference {
+			out = append(out, firecrest.Entry{Name: rel, Type: "l", Size: "40"})
+			continue
+		}
+		// ls -L exits 1 on a dangling link, which FirecREST answers with 404.
+		file, ok := f.files[target]
+		if !ok {
+			return nil, notFound(p)
+		}
+		out = append(out, firecrest.Entry{
+			Name: rel, Type: "-", Size: firecrest.Flexible(fmt.Sprint(len(file.data))),
+			LastModified: fmt.Sprintf("mtime-%d", file.mtime),
+		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out, nil
@@ -213,6 +249,9 @@ func (f *fakeRemote) View(_ context.Context, path string, offset, size int64) ([
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.views = append(f.views, viewCall{path, offset, size})
+	if target, ok := f.links[path]; ok {
+		path = target
+	}
 	file, ok := f.files[path]
 	if !ok {
 		return nil, notFound(path)
@@ -231,6 +270,11 @@ func (f *fakeRemote) Rm(_ context.Context, path string) error {
 		return notFound(path)
 	}
 	f.removed = append(f.removed, path)
+	for p := range f.links {
+		if p == path || strings.HasPrefix(p, path+"/") {
+			delete(f.links, p)
+		}
+	}
 	for p := range f.files {
 		if p == path || strings.HasPrefix(p, path+"/") {
 			delete(f.files, p)

@@ -341,11 +341,15 @@ type Entry struct {
 	Permissions  string   `json:"permissions"`
 }
 
-// Ls lists path, including hidden files.
-func (c *Client) Ls(ctx context.Context, path string, recursive bool) ([]Entry, error) {
+// Ls lists path, including hidden files. With dereference a link lists as
+// what it points to, and a dangling link fails the whole listing.
+func (c *Client) Ls(ctx context.Context, path string, recursive, dereference bool) ([]Entry, error) {
 	q := url.Values{"path": {path}, "showHidden": {"true"}}
 	if recursive {
 		q.Set("recursive", "true")
+	}
+	if dereference {
+		q.Set("dereference", "true")
 	}
 	var out struct {
 		Output []Entry `json:"output"`

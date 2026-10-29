@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -66,7 +67,7 @@ func compactState(state string) string {
 
 func isTerminal(code string) bool { return !activeStates[code] }
 
-// sbatch uploads the directory of the batch script and submits it. The plugin
+// sbatch uploads the job's directories and submits the script. The plugin
 // calls it as `sbatch <dir>/job.slurm`.
 func (b *Bridge) sbatch(ctx context.Context, args []string) Result {
 	script := ""
@@ -87,13 +88,19 @@ func (b *Bridge) sbatch(ctx context.Context, args []string) Result {
 	if !b.underRoot(dir) {
 		return fail("sbatch: error: %s is not below the bridge JobRoot %s", script, b.cfg.JobRoot)
 	}
-
-	if err := b.uploadDir(ctx, dir); err != nil {
-		return fail("sbatch: error: staging %s through FirecREST: %v", dir, err)
-	}
-	seen, err := b.listFiles(ctx, dir)
+	dirs, err := b.jobDirs(script)
 	if err != nil {
-		return fail("sbatch: error: listing %s through FirecREST: %v", dir, err)
+		return fail("sbatch: error: Unable to open file %s", script)
+	}
+
+	seen := make(map[string]map[string]fileMeta, len(dirs))
+	for _, d := range dirs {
+		if err := b.uploadDir(ctx, d); err != nil {
+			return fail("sbatch: error: staging %s through FirecREST: %v", d, err)
+		}
+		if seen[d], err = b.listFiles(ctx, d); err != nil {
+			return fail("sbatch: error: listing %s through FirecREST: %v", d, err)
+		}
 	}
 	id, err := b.remote.SubmitJob(ctx, firecrest.JobSpec{
 		ScriptPath:       script,
@@ -105,10 +112,66 @@ func (b *Bridge) sbatch(ctx context.Context, args []string) Result {
 	}
 
 	b.mu.Lock()
-	b.jobs[dir] = &job{dir: dir, id: id, seen: seen, state: "PD"}
+	for _, d := range dirs {
+		b.jobs[d] = &job{dir: d, id: id, seen: seen[d], state: "PD"}
+	}
 	b.mu.Unlock()
-	b.log.Info("submitted", "job", id, "dir", dir)
+	b.log.Info("submitted", "job", id, "dir", dir, "dirs", len(dirs))
 	return ok(fmt.Sprintf("Submitted batch job %s\n", id))
+}
+
+// jobDirs returns the script's directory, then every sibling pod directory
+// that the script names by absolute path. A gang's script, in the head pod's
+// directory, runs each member's job.sh and writes its logs in the member's own
+// directory. The plugin writes job.sh into every member's directory before it
+// submits, and puts them all next to the head's: directly below JobRoot, or
+// below the base a job-workdir annotation names. Neither that base nor hidden
+// directories (the plugin's .gang-heads) are job directories.
+func (b *Bridge) jobDirs(script string) ([]string, error) {
+	text, err := os.ReadFile(script)
+	if err != nil {
+		return nil, err
+	}
+	dir := filepath.Dir(script)
+	parent := filepath.Dir(dir)
+	prefix := parent + "/"
+	found := map[string]bool{}
+	for s := string(text); ; {
+		i := strings.Index(s, prefix)
+		if i < 0 {
+			break
+		}
+		// "/x/jobs/..." in "/y/x/jobs/..." is not a sibling's path.
+		token := i == 0 || (!isPathByte(s[i-1]) && s[i-1] != '/')
+		s = s[i+len(prefix):]
+		end := 0
+		for end < len(s) && isPathByte(s[end]) {
+			end++
+		}
+		name := s[:end]
+		if !token || name == "" || strings.HasPrefix(name, ".") {
+			continue
+		}
+		d := filepath.Join(parent, name)
+		if info, err := os.Lstat(d); d == dir || err != nil || !info.IsDir() {
+			continue
+		}
+		if info, err := os.Lstat(filepath.Join(d, "job.sh")); err == nil && info.Mode().IsRegular() {
+			found[d] = true
+		}
+	}
+	dirs := []string{dir}
+	for d := range found {
+		dirs = append(dirs, d)
+	}
+	sort.Strings(dirs[1:])
+	return dirs, nil
+}
+
+// isPathByte reports whether c can be part of a job directory name: the
+// plugin names them <namespace>-<pod uid>.
+func isPathByte(c byte) bool {
+	return c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '-' || c == '_' || c == '.'
 }
 
 // squeue answers the two calls the plugin makes: `squeue --me` as a liveness
@@ -167,19 +230,14 @@ func (b *Bridge) squeue(ctx context.Context, args []string) Result {
 		out.WriteString("\n")
 	}
 	for _, id := range ids {
-		j, err := b.remote.GetJob(ctx, id)
+		j, err := b.getJob(ctx, id)
 		if firecrest.IsNotFound(err) {
 			return fail("slurm_load_jobs error: Invalid job id specified")
 		}
 		if err != nil {
 			return fail("squeue: error: %v", err)
 		}
-		code := compactState(j.Status.State)
-		if tracked := b.lookup(id); tracked != nil {
-			tracked.mu.Lock()
-			tracked.state = code
-			tracked.mu.Unlock()
-		}
+		code := b.setState(id, j)
 		if isTerminal(code) {
 			b.finalSync(ctx, id)
 		}
@@ -193,6 +251,61 @@ func (b *Bridge) squeue(ctx context.Context, args []string) Result {
 		out.WriteString("\n")
 	}
 	return ok(out.String())
+}
+
+// getJob asks FirecREST for a job. Every member of a gang polls the job they
+// share, so for a job with several directories one answer serves all squeue
+// calls within a SyncInterval.
+func (b *Bridge) getJob(ctx context.Context, id string) (*firecrest.Job, error) {
+	b.mu.Lock()
+	dirs := 0
+	for _, j := range b.jobs {
+		if j.id == id {
+			dirs++
+		}
+	}
+	q := b.queries[id]
+	if q == nil && dirs > 1 {
+		q = &jobQuery{}
+		b.queries[id] = q
+	}
+	b.mu.Unlock()
+	if dirs < 2 {
+		return b.remote.GetJob(ctx, id)
+	}
+
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if q.job != nil && time.Since(q.at) < time.Duration(b.cfg.SyncInterval) {
+		return q.job, nil
+	}
+	j, err := b.remote.GetJob(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	q.job, q.at = j, time.Now()
+	return j, nil
+}
+
+// setState records a job's state in the entry of each of its directories.
+func (b *Bridge) setState(id string, j *firecrest.Job) string {
+	code := compactState(j.Status.State)
+	for _, tracked := range b.lookupAll(id) {
+		tracked.mu.Lock()
+		tracked.state = code
+		tracked.mu.Unlock()
+	}
+	return code
+}
+
+// refresh asks for a job's state outside an squeue call.
+func (b *Bridge) refresh(ctx context.Context, id string) {
+	j, err := b.getJob(ctx, id)
+	if err != nil {
+		b.log.Warn("state refresh failed", "job", id, "err", err)
+		return
+	}
+	b.setState(id, j)
 }
 
 const squeueHeader = "             JOBID PARTITION     NAME     USER ST       TIME  NODES NODELIST(REASON)\n"

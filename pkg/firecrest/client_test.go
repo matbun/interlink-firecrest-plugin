@@ -136,7 +136,7 @@ func TestViewAndLsDecode(t *testing.T) {
 			}
 			io.WriteString(w, `{"output":"world\n"}`)
 		case "/filesystem/sys/ops/ls":
-			if q.Get("recursive") != "true" || q.Get("showHidden") != "true" {
+			if q.Get("recursive") != "true" || q.Get("showHidden") != "true" || q.Get("dereference") != "true" {
 				t.Errorf("ls query %s", r.URL.RawQuery)
 			}
 			io.WriteString(w, `{"output":[{"name":"sub/a.out","type":"-","size":"12","lastModified":"2026-10-02T15:47:25"}]}`)
@@ -147,7 +147,7 @@ func TestViewAndLsDecode(t *testing.T) {
 	if err != nil || string(b) != "world\n" {
 		t.Fatalf("view = %q, %v", b, err)
 	}
-	es, err := c.Ls(context.Background(), "/r", true)
+	es, err := c.Ls(context.Background(), "/r", true, true)
 	if err != nil {
 		t.Fatal(err)
 	}

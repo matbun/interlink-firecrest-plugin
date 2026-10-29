@@ -123,9 +123,15 @@ func pluginReads(name string) bool {
 	return false
 }
 
-// listFiles returns the files in dir on the cluster that the plugin reads.
+// listFiles returns the files in dir on the cluster that the plugin reads. A
+// link to a file lists as that file: a gang's site launcher writes each
+// member's log in the head's directory and links it from the member's. A
+// dangling link fails a dereferencing ls, so it is retried without.
 func (b *Bridge) listFiles(ctx context.Context, dir string) (map[string]fileMeta, error) {
-	entries, err := b.remote.Ls(ctx, dir, false)
+	entries, err := b.remote.Ls(ctx, dir, false, true)
+	if err != nil {
+		entries, err = b.remote.Ls(ctx, dir, false, false)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -154,14 +160,22 @@ func (b *Bridge) Run(ctx context.Context) {
 }
 
 // SyncAll does one round: pull every unfinished job, and drop the jobs whose
-// local directory the plugin has removed.
+// local directory the plugin has removed, unless another of the job's
+// directories still needs it.
 func (b *Bridge) SyncAll(ctx context.Context) {
 	// Without the job root (a volume not mounted yet, say) a missing job
 	// directory says nothing about the pod, so nothing is removed remotely.
 	_, rootErr := os.Stat(b.cfg.JobRoot)
 	for _, j := range b.snapshot() {
 		if _, err := os.Stat(j.dir); errors.Is(err, fs.ErrNotExist) && rootErr == nil {
-			b.forget(ctx, j)
+			if b.inUse(j) {
+				// Nothing polls a job after the plugin's last delete cancels
+				// it, so the state that ends the other directories' pulls is
+				// asked for here.
+				b.refresh(ctx, j.id)
+			} else {
+				b.forget(ctx, j)
+			}
 			continue
 		}
 		j.mu.Lock()
@@ -172,35 +186,40 @@ func (b *Bridge) SyncAll(ctx context.Context) {
 			} else if j.terminal {
 				j.rounds++
 				j.done = j.rounds > b.cfg.FinalSyncRounds
+			} else if j.state != "" && isTerminal(j.state) {
+				// A pull after the end is a final sync: nothing polls a
+				// job whose last pod was deleted, so none may follow.
+				j.terminal = true
 			}
 		}
 		j.mu.Unlock()
 	}
 }
 
-// finalSync pulls a job's directory before its terminal state is reported, so
-// the plugin finds the container status files when it reads them.
+// finalSync pulls a job's directories before its terminal state is reported,
+// so the plugin finds the container status files when it reads them.
 func (b *Bridge) finalSync(ctx context.Context, id string) {
-	j := b.lookup(id)
-	if j == nil {
-		return
+	for _, j := range b.lookupAll(id) {
+		j.mu.Lock()
+		if !j.terminal {
+			if err := b.pull(ctx, j); err != nil {
+				b.log.Warn("final sync failed", "job", id, "dir", j.dir, "err", err)
+			} else {
+				j.terminal = true
+			}
+		}
+		j.mu.Unlock()
 	}
-	j.mu.Lock()
-	defer j.mu.Unlock()
-	if j.terminal {
-		return
-	}
-	if err := b.pull(ctx, j); err != nil {
-		b.log.Warn("final sync failed", "job", id, "dir", j.dir, "err", err)
-		return
-	}
-	j.terminal = true
 }
 
 // pull copies the files the plugin reads that changed since the last pull into
 // the local directory. Files are written in place, never replaced, so the
 // plugin can keep following a log through an open descriptor. Callers hold j.mu.
 func (b *Bridge) pull(ctx context.Context, j *job) error {
+	// Writing into a directory the plugin removed would recreate it.
+	if _, err := os.Stat(j.dir); errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
 	files, err := b.listFiles(ctx, j.dir)
 	if err != nil {
 		return err
@@ -211,7 +230,9 @@ func (b *Bridge) pull(ctx context.Context, j *job) error {
 			continue
 		}
 		path := filepath.Join(j.dir, name)
-		if err := b.fetch(ctx, path, path, meta.size); err != nil {
+		if err := b.fetch(ctx, path, path, meta.size); errors.Is(err, fs.ErrNotExist) {
+			return nil // the plugin removed the directory during the pull
+		} else if err != nil {
 			errs = append(errs, fmt.Errorf("%s: %w", name, err))
 			continue
 		}
@@ -220,11 +241,10 @@ func (b *Bridge) pull(ctx context.Context, j *job) error {
 	return errors.Join(errs...)
 }
 
-// fetch brings local up to date with a remote file of the given size.
+// fetch brings local up to date with a remote file of the given size. It
+// creates no directory: one the plugin removed stays removed, and the error
+// is fs.ErrNotExist.
 func (b *Bridge) fetch(ctx context.Context, remote, local string, size int64) (err error) {
-	if err := os.MkdirAll(filepath.Dir(local), 0o755); err != nil {
-		return err
-	}
 	f, err := os.OpenFile(local, os.O_RDWR|os.O_CREATE, 0o644)
 	if err != nil {
 		return err
@@ -261,10 +281,40 @@ func (b *Bridge) fetch(ctx context.Context, remote, local string, size int64) (e
 	return f.Truncate(size)
 }
 
+// inUse reports whether a removed directory is still needed by another
+// directory of its job that exists and is not fully pulled: the plugin deletes
+// a gang's members one at a time, the job may still read the head's script and
+// write to any member's directory, and a member's logs can be links into the
+// head's directory, so the remote copy stays until their last pull.
+func (b *Bridge) inUse(j *job) bool {
+	for _, other := range b.lookupAll(j.id) {
+		if other == j {
+			continue
+		}
+		if _, err := os.Stat(other.dir); err != nil {
+			continue
+		}
+		other.mu.Lock()
+		done := other.done
+		other.mu.Unlock()
+		if !done {
+			return true
+		}
+	}
+	return false
+}
+
 // forget drops a job whose local directory is gone and removes its remote copy.
 func (b *Bridge) forget(ctx context.Context, j *job) {
 	b.mu.Lock()
 	delete(b.jobs, j.dir)
+	last := true
+	for _, other := range b.jobs {
+		last = last && other.id != j.id
+	}
+	if last {
+		delete(b.queries, j.id)
+	}
 	b.mu.Unlock()
 	if !b.underRoot(j.dir) {
 		return
@@ -278,7 +328,8 @@ func (b *Bridge) forget(ctx context.Context, j *job) {
 
 // Recover registers the jobs the plugin already knows about, from the
 // JobID.jid files it keeps in each job directory, so that a restarted bridge
-// keeps syncing them.
+// keeps syncing them. The plugin writes the gang's job id into every member's
+// directory, which rebuilds a gang's directories too.
 func (b *Bridge) Recover() error {
 	entries, err := os.ReadDir(b.cfg.JobRoot)
 	if errors.Is(err, fs.ErrNotExist) {
