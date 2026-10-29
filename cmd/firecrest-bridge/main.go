@@ -59,6 +59,11 @@ func main() {
 			fmt.Fprintln(os.Stderr, "firecrest-bridge:", err)
 			os.Exit(1)
 		}
+	case "rm":
+		if err := rm(os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, "firecrest-bridge:", err)
+			os.Exit(1)
+		}
 	case "version":
 		fmt.Println(version)
 	default:
@@ -72,6 +77,7 @@ func usage(w io.Writer) {
   firecrest-bridge daemon [--config FirecrestConfig.yaml] [--verbose]
   firecrest-bridge install-shims <dir>
   firecrest-bridge shim <sbatch|squeue|scancel|sinfo> [args...]
+  firecrest-bridge rm [--config FirecrestConfig.yaml] <path below the job root>...
   firecrest-bridge version
 `)
 }
@@ -103,15 +109,7 @@ func daemon(args []string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	client, err := firecrest.New(ctx, firecrest.Options{
-		URL:          cfg.FirecrestURL,
-		System:       cfg.System,
-		TokenURL:     cfg.TokenURL,
-		ClientID:     cfg.ClientID,
-		ClientSecret: cfg.ClientSecret,
-		APIKey:       cfg.APIKey,
-		Timeout:      time.Duration(cfg.RequestTimeout),
-	})
+	client, err := newClient(ctx, cfg)
 	if err != nil {
 		return err
 	}
@@ -142,6 +140,57 @@ func daemon(args []string) error {
 	log.Info("listening", "socket", cfg.Socket, "jobRoot", cfg.JobRoot, "version", version)
 	if err := srv.Serve(l); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return err
+	}
+	return nil
+}
+
+func newClient(ctx context.Context, cfg bridge.Config) (*firecrest.Client, error) {
+	return firecrest.New(ctx, firecrest.Options{
+		URL:          cfg.FirecrestURL,
+		System:       cfg.System,
+		TokenURL:     cfg.TokenURL,
+		ClientID:     cfg.ClientID,
+		ClientSecret: cfg.ClientSecret,
+		APIKey:       cfg.APIKey,
+		Timeout:      time.Duration(cfg.RequestTimeout),
+	})
+}
+
+// rm removes paths on the cluster below the job root, for example a tenant's
+// whole job root once nothing of it runs (the daemon removes each job's own
+// directory by itself). A path that is already gone counts as removed.
+func rm(args []string) error {
+	fs := flag.NewFlagSet("rm", flag.ContinueOnError)
+	configPath := fs.String("config", os.Getenv("FIRECRESTCONFIGPATH"), "path to FirecrestConfig.yaml")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() == 0 {
+		return errors.New("rm: no path given")
+	}
+	cfg, err := bridge.LoadConfig(*configPath)
+	if err != nil {
+		return err
+	}
+	paths := make([]string, 0, fs.NArg())
+	for _, p := range fs.Args() {
+		clean, err := cfg.BelowJobRoot(p)
+		if err != nil {
+			return err
+		}
+		paths = append(paths, clean)
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+	client, err := newClient(ctx, cfg)
+	if err != nil {
+		return err
+	}
+	for _, p := range paths {
+		if err := client.Rm(ctx, p); err != nil && !firecrest.IsNotFound(err) {
+			return fmt.Errorf("rm %s: %w", p, err)
+		}
+		fmt.Println("removed", p)
 	}
 	return nil
 }

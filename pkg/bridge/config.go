@@ -33,10 +33,12 @@ type Config struct {
 	FirecrestURL string `yaml:"FirecrestURL"`
 	System       string `yaml:"System"`
 
-	// OAuth2 client credentials. The secret may come from a file (a mounted
-	// Kubernetes Secret) or from FIRECREST_CLIENT_SECRET.
+	// OAuth2 client credentials. The id and the secret may come from files (a
+	// mounted Kubernetes Secret) or from FIRECREST_CLIENT_ID and
+	// FIRECREST_CLIENT_SECRET.
 	TokenURL         string `yaml:"TokenURL"`
 	ClientID         string `yaml:"ClientID"`
+	ClientIDFile     string `yaml:"ClientIDFile"`
 	ClientSecret     string `yaml:"ClientSecret"`
 	ClientSecretFile string `yaml:"ClientSecretFile"`
 
@@ -45,7 +47,8 @@ type Config struct {
 	APIKeyFile string `yaml:"APIKeyFile"`
 
 	// Account is passed to every job submission when set.
-	Account string `yaml:"Account"`
+	Account     string `yaml:"Account"`
+	AccountFile string `yaml:"AccountFile"`
 
 	// JobRoot is the slurm plugin's DataRootFolder. It must be the same absolute
 	// path in the plugin container and on the cluster: the plugin writes absolute
@@ -101,6 +104,11 @@ func (c *Config) applyEnv() {
 		"FIRECREST_ACCOUNT":       &c.Account,
 		"FIRECREST_JOB_ROOT":      &c.JobRoot,
 		"FIRECREST_BRIDGE_SOCKET": &c.Socket,
+		// Files, so that a value in a mounted Secret never sits in the environment.
+		"FIRECREST_CLIENT_ID_FILE":     &c.ClientIDFile,
+		"FIRECREST_CLIENT_SECRET_FILE": &c.ClientSecretFile,
+		"FIRECREST_API_KEY_FILE":       &c.APIKeyFile,
+		"FIRECREST_ACCOUNT_FILE":       &c.AccountFile,
 	} {
 		if v := os.Getenv(env); v != "" {
 			*field = v
@@ -120,10 +128,17 @@ func (c *Config) resolveSecrets() error {
 		*dst = strings.TrimSpace(string(b))
 		return nil
 	}
-	if err := read(c.ClientSecretFile, &c.ClientSecret); err != nil {
-		return err
+	for file, dst := range map[string]*string{
+		c.ClientIDFile:     &c.ClientID,
+		c.ClientSecretFile: &c.ClientSecret,
+		c.APIKeyFile:       &c.APIKey,
+		c.AccountFile:      &c.Account,
+	} {
+		if err := read(file, dst); err != nil {
+			return err
+		}
 	}
-	return read(c.APIKeyFile, &c.APIKey)
+	return nil
 }
 
 func (c *Config) applyDefaults() {
@@ -166,4 +181,14 @@ func (c Config) Validate() error {
 		return errors.New("JobRoot must be an absolute path below /")
 	}
 	return nil
+}
+
+// BelowJobRoot returns path cleaned when it is JobRoot or inside it, the only
+// places `firecrest-bridge rm` removes.
+func (c Config) BelowJobRoot(path string) (string, error) {
+	clean := filepath.Clean(path)
+	if !filepath.IsAbs(clean) || (clean != c.JobRoot && !strings.HasPrefix(clean, c.JobRoot+"/")) {
+		return "", fmt.Errorf("%s is not below the job root %s", path, c.JobRoot)
+	}
+	return clean, nil
 }
