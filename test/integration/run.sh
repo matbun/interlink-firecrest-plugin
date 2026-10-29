@@ -91,6 +91,23 @@ wait_state() { # pod state timeout
 }
 in_plugin() { compose exec -T plugin bash -c "$1"; }
 remote_has() { docker exec -u fireuser "$SLURM_CTR" test -e "$1"; }
+# remote_gone waits up to $2 seconds for $1 to disappear from the cluster.
+remote_gone() {
+	for _ in $(seq 1 "$2"); do
+		remote_has "$1" || return 0
+		sleep 1
+	done
+	return 1
+}
+# The bridge removes a job's directory remotely on the first sync round after
+# the plugin removed it locally, but a gang's head stays until every member
+# has had its final rounds: one round to see the job end, FinalSyncRounds + 1
+# more to finish, one to remove. Twice that, as a round's FirecREST calls can
+# outlast SyncInterval and delay the next one.
+bridge_cfg() { sed -n "s/^$1: *//p" "$HERE/FirecrestConfig.yaml"; }
+SYNC_INTERVAL=$(bridge_cfg SyncInterval)
+SYNC_INTERVAL=${SYNC_INTERVAL%s}
+REMOVAL_TIMEOUT=$((2 * ($(bridge_cfg FinalSyncRounds) + 3) * SYNC_INTERVAL))
 job_state() { docker exec -u fireuser "$SLURM_CTR" squeue --noheader -a --states=all -O StateCompact -j "$1" 2>/dev/null | tr -d ' ' || true; }
 
 # --- assertions -------------------------------------------------------------
@@ -180,12 +197,10 @@ SCRIPT
 	check "linked rank log pulled back as a file" \
 		equals "$(in_plugin "test ! -L $member/run-main.out && cat $member/run-main.out")" "rank 1"
 	in_plugin "rm -rf $head"
-	sleep 5
-	check "head removed remotely once the job ended" bash -c "! docker exec -u fireuser $SLURM_CTR test -e $head"
+	check "head removed remotely once the job ended" remote_gone "$head" "$REMOVAL_TIMEOUT"
 	check "member kept remotely" remote_has "$member/job.sh"
 	in_plugin "rm -rf $member"
-	sleep 5
-	check "member removed remotely" bash -c "! docker exec -u fireuser $SLURM_CTR test -e $member"
+	check "member removed remotely" remote_gone "$member" "$REMOVAL_TIMEOUT"
 }
 
 scenario() { echo; echo "== $*"; }

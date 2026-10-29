@@ -9,3 +9,5 @@ ClientSecretFile: /etc/interlink/client-secret
 JobRoot: /home/fireuser/interlink/jobs
 Socket: /var/run/firecrest-bridge/bridge.sock
 SyncInterval: 2s
+# run.sh derives how long a gang's head may stay on the cluster from these two.
+FinalSyncRounds: 2

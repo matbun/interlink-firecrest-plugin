@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 )
@@ -98,6 +99,43 @@ func TestGangSbatchStagesEveryMemberDirectory(t *testing.T) {
 	}
 	if spec := f.remote.specs[0]; spec.ScriptPath != head+"/job.slurm" || spec.WorkingDirectory != head {
 		t.Errorf("spec %+v", spec)
+	}
+}
+
+// The fixtures are job.slurm files the slurm plugin's gang generator rendered
+// for a two-pod gang below /scratch/u/interlink/jobs: one srun per pod, and a
+// site launcher that starts every rank. testdata/render_gang_fixtures_test.go
+// regenerates them.
+func TestJobDirsOfPluginRenderedGangs(t *testing.T) {
+	const (
+		root   = "/scratch/u/interlink/jobs/"
+		head   = "default-0b6f3c1e-8f0a-4d7e-9c2b-5a1d3e4f6a70"
+		member = "default-7c9e2a4b-1d3f-4e5a-8b6c-9d0e1f2a3b4c"
+	)
+	for _, name := range []string{"gang-per-rank.slurm", "gang-launcher.slurm"} {
+		t.Run(name, func(t *testing.T) {
+			f := newFixture(t)
+			rendered := readFile(t, filepath.Join("testdata", name))
+			if !strings.Contains(rendered, root+member+"/") {
+				t.Fatalf("fixture does not name the member below %s", root)
+			}
+			headDir, memberDir := f.podDir(head), f.podDir(member)
+			f.podDir("default-other")
+			if err := os.MkdirAll(filepath.Join(f.root, ".gang-heads"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			script := filepath.Join(headDir, "job.slurm")
+			if err := os.WriteFile(script, []byte(strings.ReplaceAll(rendered, root, f.root+"/")), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			got, err := f.b.jobDirs(script)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(got) != 2 || got[0] != headDir || got[1] != memberDir {
+				t.Fatalf("jobDirs = %v, want [%s %s]", got, headDir, memberDir)
+			}
+		})
 	}
 }
 
