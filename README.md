@@ -31,7 +31,11 @@ flowchart TB
   plugin parses it as usual.
 - **Staging.** `sbatch <dir>/job.slurm` uploads the job directory the plugin
   wrote (scripts, env files, volume content, empty dirs) to the same absolute
-  path on the cluster, then submits the script.
+  path on the cluster, then submits the script. For a gang (several pods submitted
+  as one Slurm job by the plugin's gang scheduling build), the script names the
+  members' directories, which sit next to its own and hold their own `job.sh`:
+  the bridge stages and pulls those too, and removes a member's remote copy only
+  once the job has ended or no other member is left.
 - **Pulling back.** Every `SyncInterval` the daemon pulls the files the plugin
   reads from running jobs: logs (only the new tail), container and probe
   status files, and `compute-node`. Anything else the job leaves in its

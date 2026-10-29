@@ -89,7 +89,25 @@ wait_state() { # pod state timeout
 	done
 	return 1
 }
+in_plugin() { compose exec -T plugin bash -c "$1"; }
 remote_has() { docker exec -u fireuser "$SLURM_CTR" test -e "$1"; }
+# remote_gone waits up to $2 seconds for $1 to disappear from the cluster.
+remote_gone() {
+	for _ in $(seq 1 "$2"); do
+		remote_has "$1" || return 0
+		sleep 1
+	done
+	return 1
+}
+# The bridge removes a job's directory remotely on the first sync round after
+# the plugin removed it locally, but a gang's head stays until every member
+# has had its final rounds: one round to see the job end, FinalSyncRounds + 1
+# more to finish, one to remove. Twice that, as a round's FirecREST calls can
+# outlast SyncInterval and delay the next one.
+bridge_cfg() { sed -n "s/^$1: *//p" "$HERE/FirecrestConfig.yaml"; }
+SYNC_INTERVAL=$(bridge_cfg SyncInterval)
+SYNC_INTERVAL=${SYNC_INTERVAL%s}
+REMOVAL_TIMEOUT=$((2 * ($(bridge_cfg FinalSyncRounds) + 3) * SYNC_INTERVAL))
 job_state() { docker exec -u fireuser "$SLURM_CTR" squeue --noheader -a --states=all -O StateCompact -j "$1" 2>/dev/null | tr -d ' ' || true; }
 
 # --- assertions -------------------------------------------------------------
@@ -145,6 +163,44 @@ test_enroot() {
 	check "imported image is not pulled back to the plugin" \
 		compose exec -T bridge sh -c "! ls $(dir enroot)/*.sqsh 2>/dev/null"
 	delete enroot >/dev/null
+}
+
+# A gang's batch script, as the plugin's gang build writes it, runs in the head's
+# directory and names the members' directories. The official plugin has no
+# gangs, so this calls the shims directly, on the demo cluster's single node.
+test_gang_dirs() {
+	local head=$JOBROOT/gang-head member=$JOBROOT/gang-member jid st=""
+	scenario "gang shape: one job, two directories"
+	in_plugin "rm -rf $head $member && mkdir -p $head $member"
+	printf '#!/bin/bash\necho member ran\necho 0 > %s/run-main.status\n' "$member" |
+		in_plugin "cat > $member/job.sh && chmod +x $member/job.sh"
+	in_plugin "cat > $head/job.slurm" <<SCRIPT
+#!/bin/bash
+#SBATCH --partition=part01
+#SBATCH --output=$head/job.out
+mkdir -p $head/ranks && echo "rank 1" > $head/ranks/rank-1.out
+ln -sfn $head/ranks/rank-1.out $member/run-main.out
+srun --overlap -n1 -o $member/job.out bash -c 'hostname > $member/compute-node; exec $member/job.sh'
+SCRIPT
+	jid=$(in_plugin "/opt/firecrest-bridge/sbatch $head/job.slurm" | awk '{print $4}')
+	check "sbatch returned job $jid" test -n "$jid"
+	check "member directory staged on the cluster" remote_has "$member/job.sh"
+	for _ in $(seq 1 60); do
+		st=$(in_plugin "/opt/firecrest-bridge/squeue --noheader -O StateCompact -j $jid" | tr -d ' ' || true)
+		[ "$st" = CD ] || [ "$st" = F ] && break
+		sleep 2
+	done
+	check "job completed ($st)" equals "$st" CD
+	check "member log pulled back" contains "$(in_plugin "cat $member/job.out")" "member ran"
+	check "member status pulled back" equals "$(in_plugin "cat $member/run-main.status")" 0
+	check "member compute-node pulled back" in_plugin "test -s $member/compute-node"
+	check "linked rank log pulled back as a file" \
+		equals "$(in_plugin "test ! -L $member/run-main.out && cat $member/run-main.out")" "rank 1"
+	in_plugin "rm -rf $head"
+	check "head removed remotely once the job ended" remote_gone "$head" "$REMOVAL_TIMEOUT"
+	check "member kept remotely" remote_has "$member/job.sh"
+	in_plugin "rm -rf $member"
+	check "member removed remotely" remote_gone "$member" "$REMOVAL_TIMEOUT"
 }
 
 scenario() { echo; echo "== $*"; }
@@ -213,6 +269,7 @@ test_all() {
 	check "remote job directory removed" bash -c "! docker exec -u fireuser $SLURM_CTR test -e $(dir sleeper)"
 
 	test_enroot
+	test_gang_dirs
 
 	echo
 	echo "passed $PASS, failed $FAIL"

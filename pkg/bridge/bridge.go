@@ -24,7 +24,7 @@ type Remote interface {
 	Nodes(ctx context.Context) ([]firecrest.Node, error)
 	Partitions(ctx context.Context) ([]firecrest.Partition, error)
 	UserInfo(ctx context.Context) (string, error)
-	Ls(ctx context.Context, path string, recursive bool) ([]firecrest.Entry, error)
+	Ls(ctx context.Context, path string, recursive, dereference bool) ([]firecrest.Entry, error)
 	Mkdir(ctx context.Context, path string, parent bool) error
 	Upload(ctx context.Context, dir, name string, data []byte) error
 	Chmod(ctx context.Context, path, mode string) error
@@ -58,14 +58,16 @@ type Bridge struct {
 	remote Remote
 	log    *slog.Logger
 
-	mu   sync.Mutex
-	jobs map[string]*job // key: job directory, the same path locally and remotely
+	mu      sync.Mutex
+	jobs    map[string]*job // key: job directory, the same path locally and remotely
+	queries map[string]*jobQuery
 
 	pingMu sync.Mutex
 	pingAt time.Time
 }
 
-// job is one submitted job and the sync state of its directory.
+// job is one submitted job and the sync state of one of its directories. A
+// gang's job has one entry per member directory, all with the same id.
 type job struct {
 	mu       sync.Mutex // serialises syncs of this directory
 	dir      string
@@ -75,6 +77,14 @@ type job struct {
 	terminal bool
 	rounds   int  // pulls since the job was first seen terminal
 	done     bool // no more pulls needed
+}
+
+// jobQuery is the last FirecREST answer for a job with several directories,
+// whose members all poll it.
+type jobQuery struct {
+	mu  sync.Mutex
+	at  time.Time
+	job *firecrest.Job
 }
 
 type fileMeta struct {
@@ -88,7 +98,7 @@ func New(cfg Config, remote Remote, log *slog.Logger) *Bridge {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &Bridge{cfg: cfg, remote: remote, log: log, jobs: map[string]*job{}}
+	return &Bridge{cfg: cfg, remote: remote, log: log, jobs: map[string]*job{}, queries: map[string]*jobQuery{}}
 }
 
 // Exec runs one emulated Slurm command.
@@ -116,15 +126,17 @@ func (b *Bridge) underRoot(path string) bool {
 	return err == nil && rel != "." && rel != ".." && !strings.HasPrefix(rel, "../")
 }
 
-func (b *Bridge) lookup(id string) *job {
+// lookupAll returns the entries of every directory of job id.
+func (b *Bridge) lookupAll(id string) []*job {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	var out []*job
 	for _, j := range b.jobs {
 		if j.id == id {
-			return j
+			out = append(out, j)
 		}
 	}
-	return nil
+	return out
 }
 
 func (b *Bridge) snapshot() []*job {
