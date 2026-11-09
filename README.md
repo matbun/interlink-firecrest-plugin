@@ -137,14 +137,39 @@ set directly wins over its file. `FinalSyncRounds`, `PingTTL`, `UploadParallelis
 cluster below `JobRoot` (for example a tenant's whole job root once nothing of it runs);
 it refuses any other path. The daemon removes each job's own directory by itself.
 
+### Staging for kueue-offload
+
+`firecrest-stage` (or `firecrest-bridge stage`) is a stage command for
+[kueue-offload](https://github.com/matbun/kueue-offload)'s executor (`Staging.Command`):
+it copies the paths of a workload's `interlink.eu/stage-in` annotation from the volumes
+of its stage Job to `<STAGE_ROOT>/<STAGE_NAMESPACE>/<path>` on the cluster before the
+job, and those of `interlink.eu/stage-out` back after it, through FirecREST as the
+user's own client. The job sees them at their own paths through binds of that
+directory in the slurm plugin's configuration. Directory trees keep their empty
+directories and executable bits; links are followed on the way in (FirecREST links
+only to paths of the cluster, which the job's container may not see) and kept on the
+way back. Every path is checked before the first copy, and a path must be on a volume
+the stage Job mounts.
+
+It reads the stage Job's environment. `REMOTE` (the executor's `Staging.User` and
+`Staging.TransferHost`) is `<user>@<FirecREST URL>?system=<system>&token=<token URL>`;
+the client must run as that user. `SSH_KEY` (`Staging.KeySecret` and `KeySecretKey`)
+is the mounted client secret, with the client id in the file `client-id` next to it.
+`FIRECREST_URL`, `FIRECREST_SYSTEM`, `FIRECREST_TOKEN_URL` and
+`FIRECREST_CLIENT_ID(_FILE)`, `FIRECREST_CLIENT_SECRET(_FILE)` win when set. With
+`KEYTAB` and `PRINCIPAL` (a volume that needs Kerberos, such as EOS) it runs `kinit`
+first.
+
 ## Limitations
 
 - **No network tunnels.** interLink's wstunnel, mesh and SSH shadow modes need
   either a public endpoint on the Kubernetes side or SSH to the cluster.
   Alps compute nodes are on private addresses behind NAT, so reaching a pod's
   ports needs a rendezvous both sides can dial out to. Not implemented.
-- **Files above 5 MiB** cannot be staged at submission: FirecREST's S3 transfer
-  path is not implemented. Scripts, env files and ConfigMaps are far below it.
+- **Files above 5 MiB** cannot be staged at submission, nor by `firecrest-stage`:
+  FirecREST's S3 transfer path is not implemented. Scripts, env files and
+  ConfigMaps are far below it; `firecrest-stage` refuses a larger file before it
+  copies anything.
 - **Logs lag** by up to `SyncInterval`.
 - **One identity.** Every job runs as the owner of the FirecREST client.
 - The `slurm-job.vk.io/job-workdir` annotation must point below `JobRoot`.

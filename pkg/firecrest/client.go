@@ -128,13 +128,25 @@ func (t apiKeyTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 func (c *Client) System() string { return c.system }
 
 func (c *Client) do(ctx context.Context, method, path string, query url.Values, body io.Reader, contentType string, out any) error {
+	data, err := c.request(ctx, method, path, query, body, contentType)
+	if err != nil || out == nil || len(data) == 0 {
+		return err
+	}
+	if err := json.Unmarshal(data, out); err != nil {
+		return fmt.Errorf("firecrest %s %s: decoding %q: %w", method, path, truncate(data, 200), err)
+	}
+	return nil
+}
+
+// request sends one call and returns the body of a 2xx answer.
+func (c *Client) request(ctx context.Context, method, path string, query url.Values, body io.Reader, contentType string) ([]byte, error) {
 	u := c.base + path
 	if len(query) > 0 {
 		u += "?" + query.Encode()
 	}
 	req, err := http.NewRequestWithContext(ctx, method, u, body)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if contentType != "" {
 		req.Header.Set("Content-Type", contentType)
@@ -143,23 +155,17 @@ func (c *Client) do(ctx context.Context, method, path string, query url.Values, 
 
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return fmt.Errorf("firecrest %s %s: %w", method, path, err)
+		return nil, fmt.Errorf("firecrest %s %s: %w", method, path, err)
 	}
 	defer resp.Body.Close()
 	data, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return fmt.Errorf("firecrest %s %s: reading body: %w", method, path, err)
+		return nil, fmt.Errorf("firecrest %s %s: reading body: %w", method, path, err)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return &APIError{Method: method, Path: path, Status: resp.StatusCode, Body: strings.TrimSpace(string(data))}
+		return nil, &APIError{Method: method, Path: path, Status: resp.StatusCode, Body: strings.TrimSpace(string(data))}
 	}
-	if out == nil || len(data) == 0 {
-		return nil
-	}
-	if err := json.Unmarshal(data, out); err != nil {
-		return fmt.Errorf("firecrest %s %s: decoding %q: %w", method, path, truncate(data, 200), err)
-	}
-	return nil
+	return data, nil
 }
 
 func (c *Client) doJSON(ctx context.Context, method, path string, query url.Values, in, out any) error {
@@ -332,10 +338,12 @@ func (c *Client) UserInfo(ctx context.Context) (string, error) {
 }
 
 // Entry is one ls result. Name is relative to the listed path, with "/" between
-// components when the listing is recursive.
+// components when the listing is recursive. Permissions is ls's, without the
+// type: "rwxr-xr-x".
 type Entry struct {
 	Name         string   `json:"name"`
 	Type         string   `json:"type"` // "-" file, "d" directory, "l" link
+	LinkTarget   string   `json:"linkTarget"`
 	Size         Flexible `json:"size"`
 	LastModified string   `json:"lastModified"`
 	Permissions  string   `json:"permissions"`
@@ -379,6 +387,12 @@ func (c *Client) Upload(ctx context.Context, dir, name string, data []byte) erro
 		return err
 	}
 	return c.do(ctx, http.MethodPost, c.opsPath("upload"), url.Values{"path": {dir}}, &buf, mw.FormDataContentType(), nil)
+}
+
+// Download returns the content of path. FirecREST rejects files above its
+// max_ops_file_size (5 MiB by default) on this endpoint.
+func (c *Client) Download(ctx context.Context, path string) ([]byte, error) {
+	return c.request(ctx, http.MethodGet, c.opsPath("download"), url.Values{"path": {path}}, nil, "")
 }
 
 // Chmod sets the mode of path; mode is octal, e.g. "755".

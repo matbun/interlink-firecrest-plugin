@@ -179,9 +179,13 @@ func (f *fakeRemote) Ls(_ context.Context, path string, recursive, dereference b
 	}
 	for p, file := range f.files {
 		if rel, ok := under(p); ok {
+			perms := "rw-r--r--"
+			if file.mode == "755" {
+				perms = "rwxr-xr-x"
+			}
 			out = append(out, firecrest.Entry{
 				Name: rel, Type: "-", Size: firecrest.Flexible(fmt.Sprint(len(file.data))),
-				LastModified: fmt.Sprintf("mtime-%d", file.mtime),
+				LastModified: fmt.Sprintf("mtime-%d", file.mtime), Permissions: perms,
 			})
 		}
 	}
@@ -191,7 +195,7 @@ func (f *fakeRemote) Ls(_ context.Context, path string, recursive, dereference b
 			continue
 		}
 		if !dereference {
-			out = append(out, firecrest.Entry{Name: rel, Type: "l", Size: "40"})
+			out = append(out, firecrest.Entry{Name: rel, Type: "l", LinkTarget: target, Size: "40"})
 			continue
 		}
 		// ls -L exits 1 on a dangling link, which FirecREST answers with 404.
@@ -266,7 +270,7 @@ func (f *fakeRemote) View(_ context.Context, path string, offset, size int64) ([
 func (f *fakeRemote) Rm(_ context.Context, path string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if !f.dirs[path] && f.files[path] == nil {
+	if !f.dirs[path] && f.files[path] == nil && f.links[path] == "" {
 		return notFound(path)
 	}
 	f.removed = append(f.removed, path)
@@ -286,4 +290,35 @@ func (f *fakeRemote) Rm(_ context.Context, path string) error {
 		}
 	}
 	return nil
+}
+
+func (f *fakeRemote) Stat(_ context.Context, path string) (*firecrest.Stat, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	switch {
+	case f.dirs[path]:
+		return &firecrest.Stat{Mode: 0o040755, Size: 4096}, nil
+	case f.links[path] != "":
+		return &firecrest.Stat{Mode: 0o120777, Size: int64(len(f.links[path]))}, nil
+	case f.files[path] != nil:
+		mode := int64(0o100644)
+		if f.files[path].mode == "755" {
+			mode = 0o100755
+		}
+		return &firecrest.Stat{Mode: mode, Size: int64(len(f.files[path].data))}, nil
+	}
+	return nil, notFound(path)
+}
+
+func (f *fakeRemote) Download(_ context.Context, path string) ([]byte, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if target, ok := f.links[path]; ok {
+		path = target
+	}
+	file, ok := f.files[path]
+	if !ok {
+		return nil, notFound(path)
+	}
+	return append([]byte(nil), file.data...), nil
 }
