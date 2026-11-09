@@ -88,10 +88,11 @@ func (b *Bridge) sbatch(ctx context.Context, args []string) Result {
 	if !b.underRoot(dir) {
 		return fail("sbatch: error: %s is not below the bridge JobRoot %s", script, b.cfg.JobRoot)
 	}
-	dirs, err := b.jobDirs(script)
+	text, err := os.ReadFile(script)
 	if err != nil {
 		return fail("sbatch: error: Unable to open file %s", script)
 	}
+	dirs := b.jobDirs(script, string(text))
 
 	seen := make(map[string]map[string]fileMeta, len(dirs))
 	for _, d := range dirs {
@@ -102,7 +103,7 @@ func (b *Bridge) sbatch(ctx context.Context, args []string) Result {
 			return fail("sbatch: error: listing %s through FirecREST: %v", d, err)
 		}
 	}
-	id, err := b.remote.SubmitJob(ctx, firecrest.JobSpec{
+	id, err := b.submit(ctx, jobName(script, string(text)), firecrest.JobSpec{
 		ScriptPath:       script,
 		WorkingDirectory: dir,
 		Account:          b.cfg.Account,
@@ -127,16 +128,12 @@ func (b *Bridge) sbatch(ctx context.Context, args []string) Result {
 // submits, and puts them all next to the head's: directly below JobRoot, or
 // below the base a job-workdir annotation names. Neither that base nor hidden
 // directories (the plugin's .gang-heads) are job directories.
-func (b *Bridge) jobDirs(script string) ([]string, error) {
-	text, err := os.ReadFile(script)
-	if err != nil {
-		return nil, err
-	}
+func (b *Bridge) jobDirs(script, text string) []string {
 	dir := filepath.Dir(script)
 	parent := filepath.Dir(dir)
 	prefix := parent + "/"
 	found := map[string]bool{}
-	for s := string(text); ; {
+	for s := text; ; {
 		i := strings.Index(s, prefix)
 		if i < 0 {
 			break
@@ -165,7 +162,99 @@ func (b *Bridge) jobDirs(script string) ([]string, error) {
 		dirs = append(dirs, d)
 	}
 	sort.Strings(dirs[1:])
-	return dirs, nil
+	return dirs
+}
+
+// submit queues the job, and on a transient failure tries again, but only when
+// FirecREST did not take the first one: a call that failed after it was sent
+// may have queued the job all the same. So after such a failure, before a new
+// try and before giving up, the bridge looks for a job of the script's name and
+// directory that it does not track yet, and takes that one instead.
+func (b *Bridge) submit(ctx context.Context, name string, spec firecrest.JobSpec) (string, error) {
+	what := "submit " + spec.ScriptPath
+	tries := b.retry.Start()
+	for {
+		id, err := b.remote.SubmitJob(ctx, spec)
+		if err == nil {
+			return id, nil
+		}
+		if !firecrest.Transient(err) || firecrest.NotSent(err) {
+			if tries.Again(ctx, what, err) {
+				continue
+			}
+			return "", err
+		}
+		again := tries.Again(ctx, what, err)
+		id, lookErr := b.untracked(ctx, name, spec.WorkingDirectory)
+		switch {
+		case lookErr != nil:
+			return "", fmt.Errorf("%w; whether FirecREST queued the job is unknown: %v", err, lookErr)
+		case id != "":
+			b.log.Warn("submission failed, but FirecREST queued the job", "job", id, "script", spec.ScriptPath, "err", err)
+			return id, nil
+		case !again:
+			return "", err
+		}
+	}
+}
+
+// untracked returns the newest job named name that runs in dir and that the
+// bridge does not track, or "" when there is none.
+func (b *Bridge) untracked(ctx context.Context, name, dir string) (string, error) {
+	jobs, err := b.remote.Jobs(ctx, name)
+	if err != nil {
+		return "", err
+	}
+	b.mu.Lock()
+	tracked := make(map[string]bool, len(b.jobs))
+	for _, j := range b.jobs {
+		tracked[j.id] = true
+	}
+	b.mu.Unlock()
+	var newest firecrest.Flexible
+	for _, j := range jobs {
+		if j.Name != name || filepath.Clean(j.WorkingDirectory) != dir || tracked[string(j.JobID)] {
+			continue
+		}
+		if newest == "" || j.JobID.Int64() > newest.Int64() {
+			newest = j.JobID
+		}
+	}
+	return string(newest), nil
+}
+
+// jobName returns the name Slurm gives the job of script: its last --job-name
+// or -J directive, read as sbatch does up to the first command, or else the
+// script's file name.
+func jobName(script, text string) string {
+	name := filepath.Base(script)
+	for _, line := range strings.Split(text, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if !strings.HasPrefix(line, "#") {
+			break
+		}
+		args, ok := strings.CutPrefix(line, "#SBATCH")
+		if !ok {
+			continue
+		}
+		fields := strings.Fields(args)
+		for j := 0; j < len(fields); j++ {
+			f := fields[j]
+			switch {
+			case strings.HasPrefix(f, "--job-name="):
+				name = strings.TrimPrefix(f, "--job-name=")
+			case (f == "--job-name" || f == "-J") && j+1 < len(fields):
+				j++
+				name = fields[j]
+			case strings.HasPrefix(f, "-J") && len(f) > 2:
+				name = f[2:]
+			}
+		}
+	}
+	return name
 }
 
 // isPathByte reports whether c can be part of a job directory name: the

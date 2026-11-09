@@ -42,7 +42,9 @@ func newFixture(t *testing.T) *fixture {
 	cfg.applyDefaults()
 	remote := newFakeRemote()
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	return &fixture{t: t, root: root, remote: remote, b: New(cfg, remote, log)}
+	b := New(cfg, remote, log)
+	b.retry.Delay = time.Millisecond
+	return &fixture{t: t, root: root, remote: remote, b: b}
 }
 
 // podDir creates a job directory the way the plugin's Create leaves it before

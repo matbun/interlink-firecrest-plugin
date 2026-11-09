@@ -19,6 +19,7 @@ import (
 // Remote is the part of FirecREST the bridge uses; *firecrest.Client implements it.
 type Remote interface {
 	SubmitJob(ctx context.Context, spec firecrest.JobSpec) (string, error)
+	Jobs(ctx context.Context, name string) ([]firecrest.Job, error)
 	GetJob(ctx context.Context, id string) (*firecrest.Job, error)
 	CancelJob(ctx context.Context, id string) error
 	Nodes(ctx context.Context) ([]firecrest.Node, error)
@@ -57,6 +58,7 @@ type Bridge struct {
 	cfg    Config
 	remote Remote
 	log    *slog.Logger
+	retry  firecrest.Retry // of a submission that failed
 
 	mu      sync.Mutex
 	jobs    map[string]*job // key: job directory, the same path locally and remotely
@@ -98,7 +100,9 @@ func New(cfg Config, remote Remote, log *slog.Logger) *Bridge {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &Bridge{cfg: cfg, remote: remote, log: log, jobs: map[string]*job{}, queries: map[string]*jobQuery{}}
+	retry := firecrest.DefaultRetry
+	retry.Log = log
+	return &Bridge{cfg: cfg, remote: remote, log: log, retry: retry, jobs: map[string]*job{}, queries: map[string]*jobQuery{}}
 }
 
 // Exec runs one emulated Slurm command.

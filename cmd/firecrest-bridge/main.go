@@ -117,7 +117,7 @@ func daemon(args []string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	client, err := newClient(ctx, cfg)
+	client, err := newClient(ctx, cfg, log)
 	if err != nil {
 		return err
 	}
@@ -152,7 +152,9 @@ func daemon(args []string) error {
 	return nil
 }
 
-func newClient(ctx context.Context, cfg bridge.Config) (*firecrest.Client, error) {
+func newClient(ctx context.Context, cfg bridge.Config, log *slog.Logger) (*firecrest.Client, error) {
+	retry := firecrest.DefaultRetry
+	retry.Log = log
 	return firecrest.New(ctx, firecrest.Options{
 		URL:          cfg.FirecrestURL,
 		System:       cfg.System,
@@ -161,6 +163,7 @@ func newClient(ctx context.Context, cfg bridge.Config) (*firecrest.Client, error
 		ClientSecret: cfg.ClientSecret,
 		APIKey:       cfg.APIKey,
 		Timeout:      time.Duration(cfg.RequestTimeout),
+		Retry:        retry,
 	})
 }
 
@@ -190,7 +193,7 @@ func rm(args []string) error {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
-	client, err := newClient(ctx, cfg)
+	client, err := newClient(ctx, cfg, slog.Default())
 	if err != nil {
 		return err
 	}
