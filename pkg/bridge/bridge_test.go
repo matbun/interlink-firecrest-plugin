@@ -498,3 +498,32 @@ func TestSyncLoopStops(t *testing.T) {
 		t.Fatal("Run did not return after cancel")
 	}
 }
+
+// The plugin asks for the pending reason too (Reason:128): FirecREST's
+// stateReason, one token, None when FirecREST gives none.
+func TestSqueueReason(t *testing.T) {
+	f := newFixture(t)
+	id := f.submit(f.podDir("ns-uid1"))
+	args := []string{"--noheader", "-a", "--states=all", "-O", "exit_code,StateCompact,Reason:128", "-j", id}
+	for _, tc := range []struct{ state, reason, want string }{
+		{"PENDING", "Priority", "Priority"},
+		{"PENDING", "QOSMaxSubmitJobPerUserLimit", "QOSMaxSubmitJobPerUserLimit"},
+		{"RUNNING", "", "None"},
+		{"PENDING", "Nodes required for job are DOWN", "Nodes_required_for_job_are_DOWN"},
+	} {
+		f.remote.setState(id, tc.state, 0, 0)
+		f.remote.mu.Lock()
+		f.remote.jobs[id].Status.StateReason = tc.reason
+		f.remote.mu.Unlock()
+		res := f.b.Exec(context.Background(), "squeue", args)
+		if res.Code != 0 || res.Stderr != "" {
+			t.Fatalf("%s %q: %+v", tc.state, tc.reason, res)
+		}
+		if got := strings.Fields(res.Stdout); len(got) != 3 || got[2] != tc.want {
+			t.Errorf("%s %q: got %q, want the third field %q", tc.state, tc.reason, res.Stdout, tc.want)
+		}
+	}
+	if res := f.b.Exec(context.Background(), "squeue", []string{"--noheader", "-O", "Nodelist", "-j", id}); res.Code == 0 {
+		t.Errorf("an unknown field was answered: %+v", res)
+	}
+}

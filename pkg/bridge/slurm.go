@@ -175,7 +175,9 @@ func isPathByte(c byte) bool {
 }
 
 // squeue answers the two calls the plugin makes: `squeue --me` as a liveness
-// gate, and `squeue --noheader -a --states=all -O exit_code,StateCompact -j <id>`.
+// gate, and `squeue --noheader -a --states=all -O exit_code,StateCompact,Reason:128 -j <id>`.
+// A field may carry Slurm's :<width> suffix; Reason is FirecREST's stateReason,
+// None when it has none, as squeue prints it.
 func (b *Bridge) squeue(ctx context.Context, args []string) Result {
 	var ids, fields []string
 	noheader := false
@@ -216,10 +218,12 @@ func (b *Bridge) squeue(ctx context.Context, args []string) Result {
 	if len(fields) == 0 {
 		return fail("squeue: error: firecrest-bridge needs -O with -j")
 	}
-	for _, f := range fields {
-		if !strings.EqualFold(f, "exit_code") && !strings.EqualFold(f, "StateCompact") {
+	for i, f := range fields {
+		name, _, _ := strings.Cut(f, ":")
+		if !strings.EqualFold(name, "exit_code") && !strings.EqualFold(name, "StateCompact") && !strings.EqualFold(name, "Reason") {
 			return fail("squeue: error: field %q is not supported by firecrest-bridge", f)
 		}
+		fields[i] = name
 	}
 
 	var out strings.Builder
@@ -243,8 +247,14 @@ func (b *Bridge) squeue(ctx context.Context, args []string) Result {
 		}
 		for _, f := range fields {
 			v := code
-			if strings.EqualFold(f, "exit_code") {
+			switch {
+			case strings.EqualFold(f, "exit_code"):
 				v = fmt.Sprintf("%d:%d", j.Status.ExitCode, j.Status.InterruptSignal)
+			case strings.EqualFold(f, "Reason"):
+				v = strings.Join(strings.Fields(j.Status.StateReason), "_")
+				if v == "" {
+					v = "None"
+				}
 			}
 			fmt.Fprintf(&out, "%-20s", v)
 		}
