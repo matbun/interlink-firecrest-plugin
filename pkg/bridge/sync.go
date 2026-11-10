@@ -357,6 +357,7 @@ func (b *Bridge) Recover() error {
 			b.jobs[dir] = &job{dir: dir, id: id, seen: map[string]fileMeta{}}
 			b.log.Info("recovered", "job", id, "dir", dir)
 		}
+		b.known[id] = true
 		b.mu.Unlock()
 	}
 	return nil

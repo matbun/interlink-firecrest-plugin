@@ -73,6 +73,42 @@ func TestSubmitLastTryQueued(t *testing.T) {
 	}
 }
 
+// The same pod submitted again (retry in place keeps its UID and directory):
+// an ended job of that name and directory, untracked since the directory was
+// removed, is not the one a failed submission may have queued.
+func TestSubmitIgnoresEndedJob(t *testing.T) {
+	f := newFixture(t)
+	dir := f.namedPodDir("ns-uid1", "uid1")
+	f.remote.jobs["50"] = &firecrest.Job{JobID: "50", Name: "uid1", WorkingDirectory: dir, Status: firecrest.JobStatus{State: "CANCELLED by 1001"}}
+	f.remote.failing = []submitFail{{err: timedOut("/compute/sys/jobs")}}
+	if id := f.submit(dir); id == "50" || f.remote.submits != 2 {
+		t.Fatalf("sbatch answered job %s after %d submissions; want a new job after 2", id, f.remote.submits)
+	}
+}
+
+// Nor is a job the bridge submitted itself and stopped tracking when the
+// plugin removed its directory, even one still running (a failed scancel).
+func TestSubmitIgnoresForgottenJob(t *testing.T) {
+	f := newFixture(t)
+	dir := f.namedPodDir("ns-uid1", "uid1")
+	old := f.submit(dir)
+	f.remote.setState(old, "RUNNING", 0, 0)
+	if err := os.RemoveAll(dir); err != nil {
+		t.Fatal(err)
+	}
+	f.b.SyncAll(context.Background())
+	if len(f.b.jobs) != 0 {
+		t.Fatalf("job still tracked after its directory went: %+v", f.b.jobs)
+	}
+
+	dir = f.namedPodDir("ns-uid1", "uid1")
+	f.remote.submits = 0
+	f.remote.failing = []submitFail{{err: timedOut("/compute/sys/jobs")}}
+	if id := f.submit(dir); id == old || f.remote.submits != 2 {
+		t.Fatalf("sbatch answered job %s (the forgotten one is %s) after %d submissions; want a new job after 2", id, old, f.remote.submits)
+	}
+}
+
 // A submission that failed without a job is sent again, once the bridge has
 // looked; jobs of other names, other directories or that it tracks are not its.
 func TestSubmitFailedIsRetried(t *testing.T) {

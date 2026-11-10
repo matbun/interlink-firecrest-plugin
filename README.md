@@ -52,9 +52,9 @@ flowchart TB
   refused, reset or dropped connection, a timeout) is sent again, up to 4 tries
   over about 30 s; a 4xx never is. A submission is sent again only when
   FirecREST did not queue it: before each new try the bridge looks for a job of
-  the script's name and directory that it does not track yet, and takes that
-  one if there is. This holds for the daemon, `firecrest-bridge rm` and
-  `firecrest-stage`, and each retry is logged once.
+  the script's name and directory that has not ended and that it has never
+  submitted itself, and takes that one if there is. This holds for the daemon,
+  `firecrest-bridge rm` and `firecrest-stage`, and each retry is logged once.
 
 ## Status
 

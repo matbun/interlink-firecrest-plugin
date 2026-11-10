@@ -63,6 +63,9 @@ type Bridge struct {
 	mu      sync.Mutex
 	jobs    map[string]*job // key: job directory, the same path locally and remotely
 	queries map[string]*jobQuery
+	// known holds every job id submitted or recovered, kept after the job is
+	// dropped from jobs: none of them is a job a failed submission queued.
+	known map[string]bool
 
 	pingMu sync.Mutex
 	pingAt time.Time
@@ -102,7 +105,7 @@ func New(cfg Config, remote Remote, log *slog.Logger) *Bridge {
 	}
 	retry := firecrest.DefaultRetry
 	retry.Log = log
-	return &Bridge{cfg: cfg, remote: remote, log: log, retry: retry, jobs: map[string]*job{}, queries: map[string]*jobQuery{}}
+	return &Bridge{cfg: cfg, remote: remote, log: log, retry: retry, jobs: map[string]*job{}, queries: map[string]*jobQuery{}, known: map[string]bool{}}
 }
 
 // Exec runs one emulated Slurm command.

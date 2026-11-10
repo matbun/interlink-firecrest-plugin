@@ -116,6 +116,7 @@ func (b *Bridge) sbatch(ctx context.Context, args []string) Result {
 	for _, d := range dirs {
 		b.jobs[d] = &job{dir: d, id: id, seen: seen[d], state: "PD"}
 	}
+	b.known[id] = true
 	b.mu.Unlock()
 	b.log.Info("submitted", "job", id, "dir", dir, "dirs", len(dirs))
 	return ok(fmt.Sprintf("Submitted batch job %s\n", id))
@@ -169,7 +170,8 @@ func (b *Bridge) jobDirs(script, text string) []string {
 // FirecREST did not take the first one: a call that failed after it was sent
 // may have queued the job all the same. So after such a failure, before a new
 // try and before giving up, the bridge looks for a job of the script's name and
-// directory that it does not track yet, and takes that one instead.
+// directory that it has never seen and that has not ended, and takes that one
+// instead.
 func (b *Bridge) submit(ctx context.Context, name string, spec firecrest.JobSpec) (string, error) {
 	what := "submit " + spec.ScriptPath
 	tries := b.retry.Start()
@@ -198,22 +200,20 @@ func (b *Bridge) submit(ctx context.Context, name string, spec firecrest.JobSpec
 	}
 }
 
-// untracked returns the newest job named name that runs in dir and that the
-// bridge does not track, or "" when there is none.
+// untracked returns the newest job named name that runs in dir, has not ended
+// and that the bridge has never submitted or recovered, or "" when there is
+// none. The same pod may be submitted again into the same directory, and
+// FirecREST lists the earlier jobs for a day; it gives no submission time.
 func (b *Bridge) untracked(ctx context.Context, name, dir string) (string, error) {
 	jobs, err := b.remote.Jobs(ctx, name)
 	if err != nil {
 		return "", err
 	}
 	b.mu.Lock()
-	tracked := make(map[string]bool, len(b.jobs))
-	for _, j := range b.jobs {
-		tracked[j.id] = true
-	}
-	b.mu.Unlock()
+	defer b.mu.Unlock()
 	var newest firecrest.Flexible
 	for _, j := range jobs {
-		if j.Name != name || filepath.Clean(j.WorkingDirectory) != dir || tracked[string(j.JobID)] {
+		if j.Name != name || filepath.Clean(j.WorkingDirectory) != dir || b.known[string(j.JobID)] || isTerminal(compactState(j.Status.State)) {
 			continue
 		}
 		if newest == "" || j.JobID.Int64() > newest.Int64() {
