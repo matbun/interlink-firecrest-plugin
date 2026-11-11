@@ -88,10 +88,11 @@ func (b *Bridge) sbatch(ctx context.Context, args []string) Result {
 	if !b.underRoot(dir) {
 		return fail("sbatch: error: %s is not below the bridge JobRoot %s", script, b.cfg.JobRoot)
 	}
-	dirs, err := b.jobDirs(script)
+	text, err := os.ReadFile(script)
 	if err != nil {
 		return fail("sbatch: error: Unable to open file %s", script)
 	}
+	dirs := b.jobDirs(script, string(text))
 
 	seen := make(map[string]map[string]fileMeta, len(dirs))
 	for _, d := range dirs {
@@ -102,7 +103,7 @@ func (b *Bridge) sbatch(ctx context.Context, args []string) Result {
 			return fail("sbatch: error: listing %s through FirecREST: %v", d, err)
 		}
 	}
-	id, err := b.remote.SubmitJob(ctx, firecrest.JobSpec{
+	id, err := b.submit(ctx, jobName(script, string(text)), firecrest.JobSpec{
 		ScriptPath:       script,
 		WorkingDirectory: dir,
 		Account:          b.cfg.Account,
@@ -115,6 +116,7 @@ func (b *Bridge) sbatch(ctx context.Context, args []string) Result {
 	for _, d := range dirs {
 		b.jobs[d] = &job{dir: d, id: id, seen: seen[d], state: "PD"}
 	}
+	b.known[id] = true
 	b.mu.Unlock()
 	b.log.Info("submitted", "job", id, "dir", dir, "dirs", len(dirs))
 	return ok(fmt.Sprintf("Submitted batch job %s\n", id))
@@ -127,16 +129,12 @@ func (b *Bridge) sbatch(ctx context.Context, args []string) Result {
 // submits, and puts them all next to the head's: directly below JobRoot, or
 // below the base a job-workdir annotation names. Neither that base nor hidden
 // directories (the plugin's .gang-heads) are job directories.
-func (b *Bridge) jobDirs(script string) ([]string, error) {
-	text, err := os.ReadFile(script)
-	if err != nil {
-		return nil, err
-	}
+func (b *Bridge) jobDirs(script, text string) []string {
 	dir := filepath.Dir(script)
 	parent := filepath.Dir(dir)
 	prefix := parent + "/"
 	found := map[string]bool{}
-	for s := string(text); ; {
+	for s := text; ; {
 		i := strings.Index(s, prefix)
 		if i < 0 {
 			break
@@ -165,7 +163,98 @@ func (b *Bridge) jobDirs(script string) ([]string, error) {
 		dirs = append(dirs, d)
 	}
 	sort.Strings(dirs[1:])
-	return dirs, nil
+	return dirs
+}
+
+// submit queues the job, and on a transient failure tries again, but only when
+// FirecREST did not take the first one: a call that failed after it was sent
+// may have queued the job all the same. So after such a failure, before a new
+// try and before giving up, the bridge looks for a job of the script's name and
+// directory that it has never seen and that has not ended, and takes that one
+// instead.
+func (b *Bridge) submit(ctx context.Context, name string, spec firecrest.JobSpec) (string, error) {
+	what := "submit " + spec.ScriptPath
+	tries := b.retry.Start()
+	for {
+		id, err := b.remote.SubmitJob(ctx, spec)
+		if err == nil {
+			return id, nil
+		}
+		if !firecrest.Transient(err) || firecrest.NotSent(err) {
+			if tries.Again(ctx, what, err) {
+				continue
+			}
+			return "", err
+		}
+		again := tries.Again(ctx, what, err)
+		id, lookErr := b.untracked(ctx, name, spec.WorkingDirectory)
+		switch {
+		case lookErr != nil:
+			return "", fmt.Errorf("%w; whether FirecREST queued the job is unknown: %v", err, lookErr)
+		case id != "":
+			b.log.Warn("submission failed, but FirecREST queued the job", "job", id, "script", spec.ScriptPath, "err", err)
+			return id, nil
+		case !again:
+			return "", err
+		}
+	}
+}
+
+// untracked returns the newest job named name that runs in dir, has not ended
+// and that the bridge has never submitted or recovered, or "" when there is
+// none. The same pod may be submitted again into the same directory, and
+// FirecREST lists the earlier jobs for a day; it gives no submission time.
+func (b *Bridge) untracked(ctx context.Context, name, dir string) (string, error) {
+	jobs, err := b.remote.Jobs(ctx, name)
+	if err != nil {
+		return "", err
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	var newest firecrest.Flexible
+	for _, j := range jobs {
+		if j.Name != name || filepath.Clean(j.WorkingDirectory) != dir || b.known[string(j.JobID)] || isTerminal(compactState(j.Status.State)) {
+			continue
+		}
+		if newest == "" || j.JobID.Int64() > newest.Int64() {
+			newest = j.JobID
+		}
+	}
+	return string(newest), nil
+}
+
+// jobName returns the name Slurm gives the job of script: its last --job-name
+// or -J directive, read as sbatch does up to the first command, or else the
+// script's file name.
+func jobName(script, text string) string {
+	name := filepath.Base(script)
+	for _, line := range strings.Split(text, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if !strings.HasPrefix(line, "#") {
+			break
+		}
+		args, ok := strings.CutPrefix(line, "#SBATCH")
+		if !ok {
+			continue
+		}
+		fields := strings.Fields(args)
+		for j := 0; j < len(fields); j++ {
+			f := fields[j]
+			switch {
+			case strings.HasPrefix(f, "--job-name="):
+				name = strings.TrimPrefix(f, "--job-name=")
+			case (f == "--job-name" || f == "-J") && j+1 < len(fields):
+				j++
+				name = fields[j]
+			case strings.HasPrefix(f, "-J") && len(f) > 2:
+				name = f[2:]
+			}
+		}
+	}
+	return name
 }
 
 // isPathByte reports whether c can be part of a job directory name: the
@@ -175,7 +264,9 @@ func isPathByte(c byte) bool {
 }
 
 // squeue answers the two calls the plugin makes: `squeue --me` as a liveness
-// gate, and `squeue --noheader -a --states=all -O exit_code,StateCompact -j <id>`.
+// gate, and `squeue --noheader -a --states=all -O exit_code,StateCompact,Reason:128 -j <id>`.
+// A field may carry Slurm's :<width> suffix; Reason is FirecREST's stateReason,
+// None when it has none, as squeue prints it.
 func (b *Bridge) squeue(ctx context.Context, args []string) Result {
 	var ids, fields []string
 	noheader := false
@@ -216,10 +307,12 @@ func (b *Bridge) squeue(ctx context.Context, args []string) Result {
 	if len(fields) == 0 {
 		return fail("squeue: error: firecrest-bridge needs -O with -j")
 	}
-	for _, f := range fields {
-		if !strings.EqualFold(f, "exit_code") && !strings.EqualFold(f, "StateCompact") {
+	for i, f := range fields {
+		name, _, _ := strings.Cut(f, ":")
+		if !strings.EqualFold(name, "exit_code") && !strings.EqualFold(name, "StateCompact") && !strings.EqualFold(name, "Reason") {
 			return fail("squeue: error: field %q is not supported by firecrest-bridge", f)
 		}
+		fields[i] = name
 	}
 
 	var out strings.Builder
@@ -243,8 +336,14 @@ func (b *Bridge) squeue(ctx context.Context, args []string) Result {
 		}
 		for _, f := range fields {
 			v := code
-			if strings.EqualFold(f, "exit_code") {
+			switch {
+			case strings.EqualFold(f, "exit_code"):
 				v = fmt.Sprintf("%d:%d", j.Status.ExitCode, j.Status.InterruptSignal)
+			case strings.EqualFold(f, "Reason"):
+				v = strings.Join(strings.Fields(j.Status.StateReason), "_")
+				if v == "" {
+					v = "None"
+				}
 			}
 			fmt.Fprintf(&out, "%-20s", v)
 		}

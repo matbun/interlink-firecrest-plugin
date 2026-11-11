@@ -126,10 +126,11 @@ func pluginReads(name string) bool {
 // listFiles returns the files in dir on the cluster that the plugin reads. A
 // link to a file lists as that file: a gang's site launcher writes each
 // member's log in the head's directory and links it from the member's. A
-// dangling link fails a dereferencing ls, so it is retried without.
+// dangling link fails a dereferencing ls, so it is tried again without; a
+// FirecREST that is still failing after the client's retries is not.
 func (b *Bridge) listFiles(ctx context.Context, dir string) (map[string]fileMeta, error) {
 	entries, err := b.remote.Ls(ctx, dir, false, true)
-	if err != nil {
+	if err != nil && !firecrest.Transient(err) {
 		entries, err = b.remote.Ls(ctx, dir, false, false)
 	}
 	if err != nil {
@@ -356,6 +357,7 @@ func (b *Bridge) Recover() error {
 			b.jobs[dir] = &job{dir: dir, id: id, seen: map[string]fileMeta{}}
 			b.log.Info("recovered", "job", id, "dir", dir)
 		}
+		b.known[id] = true
 		b.mu.Unlock()
 	}
 	return nil

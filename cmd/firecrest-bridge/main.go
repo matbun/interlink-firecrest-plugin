@@ -13,6 +13,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"syscall"
@@ -32,6 +33,10 @@ func main() {
 		if name == s {
 			os.Exit(bridge.RunShim(name, os.Args[1:], socket(), os.Stdout, os.Stderr))
 		}
+	}
+	// kueue-offload's stage Job runs its command without arguments.
+	if name == "firecrest-stage" {
+		os.Exit(stage())
 	}
 
 	if len(os.Args) < 2 {
@@ -59,6 +64,8 @@ func main() {
 			fmt.Fprintln(os.Stderr, "firecrest-bridge:", err)
 			os.Exit(1)
 		}
+	case "stage":
+		os.Exit(stage())
 	case "rm":
 		if err := rm(os.Args[2:]); err != nil {
 			fmt.Fprintln(os.Stderr, "firecrest-bridge:", err)
@@ -78,6 +85,7 @@ func usage(w io.Writer) {
   firecrest-bridge install-shims <dir>
   firecrest-bridge shim <sbatch|squeue|scancel|sinfo> [args...]
   firecrest-bridge rm [--config FirecrestConfig.yaml] <path below the job root>...
+  firecrest-bridge stage    (or firecrest-stage; settings from the environment of kueue-offload's stage Job)
   firecrest-bridge version
 `)
 }
@@ -109,7 +117,7 @@ func daemon(args []string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	client, err := newClient(ctx, cfg)
+	client, err := newClient(ctx, cfg, log)
 	if err != nil {
 		return err
 	}
@@ -144,7 +152,9 @@ func daemon(args []string) error {
 	return nil
 }
 
-func newClient(ctx context.Context, cfg bridge.Config) (*firecrest.Client, error) {
+func newClient(ctx context.Context, cfg bridge.Config, log *slog.Logger) (*firecrest.Client, error) {
+	retry := firecrest.DefaultRetry
+	retry.Log = log
 	return firecrest.New(ctx, firecrest.Options{
 		URL:          cfg.FirecrestURL,
 		System:       cfg.System,
@@ -153,6 +163,7 @@ func newClient(ctx context.Context, cfg bridge.Config) (*firecrest.Client, error
 		ClientSecret: cfg.ClientSecret,
 		APIKey:       cfg.APIKey,
 		Timeout:      time.Duration(cfg.RequestTimeout),
+		Retry:        retry,
 	})
 }
 
@@ -182,7 +193,7 @@ func rm(args []string) error {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
-	client, err := newClient(ctx, cfg)
+	client, err := newClient(ctx, cfg, slog.Default())
 	if err != nil {
 		return err
 	}
@@ -193,6 +204,39 @@ func rm(args []string) error {
 		fmt.Println("removed", p)
 	}
 	return nil
+}
+
+// stage copies a workload's stage-in paths to the cluster, or its stage-out
+// paths back, as kueue-offload's stage Job: bridge.StageFromEnv has the
+// environment it reads. A KEYTAB gets a Kerberos ticket first, for a path on a
+// volume that needs one (EOS).
+func stage() int {
+	s, opts, err := bridge.StageFromEnv(os.Getenv)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "firecrest-stage:", err)
+		return 2
+	}
+	if keytab := os.Getenv("KEYTAB"); keytab != "" {
+		kinit := exec.Command("kinit", "-kt", keytab, os.Getenv("PRINCIPAL"))
+		kinit.Stdout, kinit.Stderr = os.Stdout, os.Stderr
+		if err := kinit.Run(); err != nil {
+			fmt.Fprintln(os.Stderr, "firecrest-stage: kinit:", err)
+			return 1
+		}
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+	opts.Timeout = 5 * time.Minute
+	client, err := firecrest.New(ctx, opts)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "firecrest-stage:", err)
+		return 2
+	}
+	if err := s.Run(ctx, client); err != nil {
+		fmt.Fprintln(os.Stderr, "firecrest-stage:", err)
+		return 1
+	}
+	return 0
 }
 
 // installShims copies this binary into dir and links the Slurm command names to

@@ -14,7 +14,11 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
 
 FROM alpine:3.22
 
+# kinit for firecrest-stage, which takes a Kerberos ticket for a volume that needs one
+RUN apk add --no-cache krb5
+
 COPY --from=build-stage /app/bin/firecrest-bridge /usr/local/bin/firecrest-bridge
+RUN ln -s firecrest-bridge /usr/local/bin/firecrest-stage
 
 ENV FIRECRESTCONFIGPATH=/etc/interlink/FirecrestConfig.yaml
 

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -22,6 +23,10 @@ type fakeRemote struct {
 	nextID  int
 	clock   int
 	specs   []firecrest.JobSpec
+	submits int          // SubmitJob calls, failed ones included
+	failing []submitFail // what the next SubmitJob calls do instead of succeeding
+	lookups int          // Jobs calls
+	jobsErr error        // what Jobs fails with
 	views   []viewCall
 	removed []string
 	pings   int
@@ -36,6 +41,13 @@ type fakeFile struct {
 	data  []byte
 	mode  string
 	mtime int
+}
+
+// submitFail is a submission that fails with err, and queues the job all the
+// same when queued is set, as a FirecREST that timed out after sbatch did.
+type submitFail struct {
+	err    error
+	queued bool
 }
 
 type viewCall struct {
@@ -97,17 +109,48 @@ func (f *fakeRemote) setState(id, state string, exit, signal int) {
 	f.jobs[id].Status = firecrest.JobStatus{State: state, ExitCode: exit, InterruptSignal: signal}
 }
 
+var fakeJobName = regexp.MustCompile(`(?m)^#SBATCH --job-name=(\S+)`)
+
 func (f *fakeRemote) SubmitJob(_ context.Context, spec firecrest.JobSpec) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if _, ok := f.files[spec.ScriptPath]; spec.ScriptPath != "" && !ok {
+	f.submits++
+	var fault submitFail
+	if len(f.failing) > 0 {
+		fault, f.failing = f.failing[0], f.failing[1:]
+		if !fault.queued {
+			return "", fault.err
+		}
+	}
+	file, ok := f.files[spec.ScriptPath]
+	if spec.ScriptPath != "" && !ok {
 		return "", fmt.Errorf("sbatch: error: Unable to open file %s", spec.ScriptPath)
+	}
+	name := filepath.Base(spec.ScriptPath)
+	if m := fakeJobName.FindSubmatch(file.data); m != nil {
+		name = string(m[1])
 	}
 	f.nextID++
 	id := fmt.Sprint(f.nextID)
 	f.specs = append(f.specs, spec)
-	f.jobs[id] = &firecrest.Job{JobID: firecrest.Flexible(id), Status: firecrest.JobStatus{State: "PENDING"}}
-	return id, nil
+	f.jobs[id] = &firecrest.Job{JobID: firecrest.Flexible(id), Name: name, WorkingDirectory: spec.WorkingDirectory, Status: firecrest.JobStatus{State: "PENDING"}}
+	return id, fault.err
+}
+
+// Jobs lists every job, whatever name: the bridge must not count on
+// FirecREST's name filter.
+func (f *fakeRemote) Jobs(context.Context, string) ([]firecrest.Job, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.lookups++
+	if f.jobsErr != nil {
+		return nil, f.jobsErr
+	}
+	out := make([]firecrest.Job, 0, len(f.jobs))
+	for _, j := range f.jobs {
+		out = append(out, *j)
+	}
+	return out, nil
 }
 
 func (f *fakeRemote) GetJob(_ context.Context, id string) (*firecrest.Job, error) {
@@ -179,9 +222,13 @@ func (f *fakeRemote) Ls(_ context.Context, path string, recursive, dereference b
 	}
 	for p, file := range f.files {
 		if rel, ok := under(p); ok {
+			perms := "rw-r--r--"
+			if file.mode == "755" {
+				perms = "rwxr-xr-x"
+			}
 			out = append(out, firecrest.Entry{
 				Name: rel, Type: "-", Size: firecrest.Flexible(fmt.Sprint(len(file.data))),
-				LastModified: fmt.Sprintf("mtime-%d", file.mtime),
+				LastModified: fmt.Sprintf("mtime-%d", file.mtime), Permissions: perms,
 			})
 		}
 	}
@@ -191,7 +238,7 @@ func (f *fakeRemote) Ls(_ context.Context, path string, recursive, dereference b
 			continue
 		}
 		if !dereference {
-			out = append(out, firecrest.Entry{Name: rel, Type: "l", Size: "40"})
+			out = append(out, firecrest.Entry{Name: rel, Type: "l", LinkTarget: target, Size: "40"})
 			continue
 		}
 		// ls -L exits 1 on a dangling link, which FirecREST answers with 404.
@@ -266,7 +313,7 @@ func (f *fakeRemote) View(_ context.Context, path string, offset, size int64) ([
 func (f *fakeRemote) Rm(_ context.Context, path string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if !f.dirs[path] && f.files[path] == nil {
+	if !f.dirs[path] && f.files[path] == nil && f.links[path] == "" {
 		return notFound(path)
 	}
 	f.removed = append(f.removed, path)
@@ -286,4 +333,35 @@ func (f *fakeRemote) Rm(_ context.Context, path string) error {
 		}
 	}
 	return nil
+}
+
+func (f *fakeRemote) Stat(_ context.Context, path string) (*firecrest.Stat, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	switch {
+	case f.dirs[path]:
+		return &firecrest.Stat{Mode: 0o040755, Size: 4096}, nil
+	case f.links[path] != "":
+		return &firecrest.Stat{Mode: 0o120777, Size: int64(len(f.links[path]))}, nil
+	case f.files[path] != nil:
+		mode := int64(0o100644)
+		if f.files[path].mode == "755" {
+			mode = 0o100755
+		}
+		return &firecrest.Stat{Mode: mode, Size: int64(len(f.files[path].data))}, nil
+	}
+	return nil, notFound(path)
+}
+
+func (f *fakeRemote) Download(_ context.Context, path string) ([]byte, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if target, ok := f.links[path]; ok {
+		path = target
+	}
+	file, ok := f.files[path]
+	if !ok {
+		return nil, notFound(path)
+	}
+	return append([]byte(nil), file.data...), nil
 }

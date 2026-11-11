@@ -128,10 +128,11 @@ func TestJobDirsOfPluginRenderedGangs(t *testing.T) {
 			if err := os.WriteFile(script, []byte(strings.ReplaceAll(rendered, root, f.root+"/")), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			got, err := f.b.jobDirs(script)
+			text, err := os.ReadFile(script)
 			if err != nil {
 				t.Fatal(err)
 			}
+			got := f.b.jobDirs(script, string(text))
 			if len(got) != 2 || got[0] != headDir || got[1] != memberDir {
 				t.Fatalf("jobDirs = %v, want [%s %s]", got, headDir, memberDir)
 			}

@@ -40,6 +40,10 @@ type Options struct {
 	APIKey string
 
 	Timeout time.Duration
+
+	// Retry is how a call that failed transiently is tried again, DefaultRetry
+	// when Attempts is 0. SubmitJob is never retried here.
+	Retry Retry
 }
 
 // Client talks to one system of one FirecREST deployment.
@@ -47,6 +51,7 @@ type Client struct {
 	base   string
 	system string
 	http   *http.Client
+	retry  Retry
 }
 
 // APIError is a non-2xx answer from FirecREST.
@@ -106,10 +111,15 @@ func New(ctx context.Context, opts Options) (*Client, error) {
 		return nil, errors.New("firecrest: set either APIKey or TokenURL, ClientID and ClientSecret")
 	}
 
+	retry := opts.Retry
+	if retry.Attempts == 0 {
+		retry.Attempts, retry.Delay, retry.MaxElapsed = DefaultRetry.Attempts, DefaultRetry.Delay, DefaultRetry.MaxElapsed
+	}
 	return &Client{
 		base:   strings.TrimRight(opts.URL, "/"),
 		system: opts.System,
 		http:   hc,
+		retry:  retry,
 	}, nil
 }
 
@@ -127,53 +137,91 @@ func (t apiKeyTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 // System returns the system name the client targets.
 func (c *Client) System() string { return c.system }
 
-func (c *Client) do(ctx context.Context, method, path string, query url.Values, body io.Reader, contentType string, out any) error {
-	u := c.base + path
-	if len(query) > 0 {
-		u += "?" + query.Encode()
-	}
-	req, err := http.NewRequestWithContext(ctx, method, u, body)
-	if err != nil {
+// call is one FirecREST request. once marks the calls that are not safe to
+// send twice: a submission and a plain mkdir.
+type call struct {
+	method, path string
+	query        url.Values
+	body         []byte
+	contentType  string
+	once         bool
+}
+
+func (c *Client) do(ctx context.Context, cl call, out any) error {
+	data, err := c.request(ctx, cl)
+	if err != nil || out == nil || len(data) == 0 {
 		return err
 	}
-	if contentType != "" {
-		req.Header.Set("Content-Type", contentType)
+	if err := json.Unmarshal(data, out); err != nil {
+		return fmt.Errorf("firecrest %s %s: decoding %q: %w", cl.method, cl.path, truncate(data, 200), err)
+	}
+	return nil
+}
+
+// request sends a call, again while it fails transiently and c.retry allows,
+// and returns the body of a 2xx answer.
+func (c *Client) request(ctx context.Context, cl call) ([]byte, error) {
+	tries := c.retry.Start()
+	for {
+		data, err := c.send(ctx, cl)
+		if err == nil || cl.once || !tries.Again(ctx, cl.method+" "+cl.path, err) {
+			return data, err
+		}
+	}
+}
+
+// send makes one HTTP request.
+func (c *Client) send(ctx context.Context, cl call) ([]byte, error) {
+	u := c.base + cl.path
+	if len(cl.query) > 0 {
+		u += "?" + cl.query.Encode()
+	}
+	var body io.Reader
+	if cl.body != nil {
+		body = bytes.NewReader(cl.body)
+	}
+	req, err := http.NewRequestWithContext(ctx, cl.method, u, body)
+	if err != nil {
+		return nil, err
+	}
+	if cl.contentType != "" {
+		req.Header.Set("Content-Type", cl.contentType)
 	}
 	req.Header.Set("Accept", "application/json")
 
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return fmt.Errorf("firecrest %s %s: %w", method, path, err)
+		return nil, fmt.Errorf("firecrest %s %s: %w", cl.method, cl.path, err)
 	}
 	defer resp.Body.Close()
 	data, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return fmt.Errorf("firecrest %s %s: reading body: %w", method, path, err)
+		return nil, fmt.Errorf("firecrest %s %s: reading body: %w", cl.method, cl.path, err)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return &APIError{Method: method, Path: path, Status: resp.StatusCode, Body: strings.TrimSpace(string(data))}
+		return nil, &APIError{Method: cl.method, Path: cl.path, Status: resp.StatusCode, Body: strings.TrimSpace(string(data))}
 	}
-	if out == nil || len(data) == 0 {
-		return nil
-	}
-	if err := json.Unmarshal(data, out); err != nil {
-		return fmt.Errorf("firecrest %s %s: decoding %q: %w", method, path, truncate(data, 200), err)
-	}
-	return nil
+	return data, nil
 }
 
-func (c *Client) doJSON(ctx context.Context, method, path string, query url.Values, in, out any) error {
-	var body io.Reader
-	contentType := ""
+func jsonCall(method, path string, query url.Values, in any) (call, error) {
+	cl := call{method: method, path: path, query: query}
 	if in != nil {
 		b, err := json.Marshal(in)
 		if err != nil {
-			return err
+			return cl, err
 		}
-		body = bytes.NewReader(b)
-		contentType = "application/json"
+		cl.body, cl.contentType = b, "application/json"
 	}
-	return c.do(ctx, method, path, query, body, contentType, out)
+	return cl, nil
+}
+
+func (c *Client) doJSON(ctx context.Context, method, path string, query url.Values, in, out any) error {
+	cl, err := jsonCall(method, path, query, in)
+	if err != nil {
+		return err
+	}
+	return c.do(ctx, cl, out)
 }
 
 func truncate(b []byte, n int) string {
@@ -229,12 +277,19 @@ type JobSpec struct {
 	Env              map[string]string `json:"env,omitempty"`
 }
 
-// SubmitJob submits a batch job and returns its scheduler id.
+// SubmitJob submits a batch job and returns its scheduler id. It sends the job
+// once: a call that failed after it was sent may still have queued it, which
+// only the caller can look up (Jobs) before it submits again.
 func (c *Client) SubmitJob(ctx context.Context, spec JobSpec) (string, error) {
 	var out struct {
 		JobID Flexible `json:"jobId"`
 	}
-	if err := c.doJSON(ctx, http.MethodPost, c.computePath("/jobs"), nil, map[string]JobSpec{"job": spec}, &out); err != nil {
+	cl, err := jsonCall(http.MethodPost, c.computePath("/jobs"), nil, map[string]JobSpec{"job": spec})
+	if err != nil {
+		return "", err
+	}
+	cl.once = true
+	if err := c.do(ctx, cl, &out); err != nil {
 		return "", err
 	}
 	if out.JobID == "" {
@@ -274,6 +329,17 @@ func (c *Client) GetJob(ctx context.Context, id string) (*Job, error) {
 		return nil, &APIError{Method: http.MethodGet, Path: path, Status: http.StatusNotFound, Body: "no job in response"}
 	}
 	return &out.Jobs[0], nil
+}
+
+// Jobs returns the user's jobs named name: those pending or running, and those
+// that ended in the last 24 hours. A FirecREST without the name filter returns
+// all of them, so callers check the name too.
+func (c *Client) Jobs(ctx context.Context, name string) ([]Job, error) {
+	var out struct {
+		Jobs []Job `json:"jobs"`
+	}
+	err := c.doJSON(ctx, http.MethodGet, c.computePath("/jobs"), url.Values{"name": {name}}, nil, &out)
+	return out.Jobs, err
 }
 
 // CancelJob cancels a job.
@@ -332,10 +398,12 @@ func (c *Client) UserInfo(ctx context.Context) (string, error) {
 }
 
 // Entry is one ls result. Name is relative to the listed path, with "/" between
-// components when the listing is recursive.
+// components when the listing is recursive. Permissions is ls's, without the
+// type: "rwxr-xr-x".
 type Entry struct {
 	Name         string   `json:"name"`
 	Type         string   `json:"type"` // "-" file, "d" directory, "l" link
+	LinkTarget   string   `json:"linkTarget"`
 	Size         Flexible `json:"size"`
 	LastModified string   `json:"lastModified"`
 	Permissions  string   `json:"permissions"`
@@ -358,9 +426,15 @@ func (c *Client) Ls(ctx context.Context, path string, recursive, dereference boo
 	return out.Output, err
 }
 
-// Mkdir creates path, and its parents when parent is set (mkdir -p).
+// Mkdir creates path, and its parents when parent is set (mkdir -p). Only
+// mkdir -p is retried: a plain mkdir that worked fails when sent again.
 func (c *Client) Mkdir(ctx context.Context, path string, parent bool) error {
-	return c.doJSON(ctx, http.MethodPost, c.opsPath("mkdir"), nil, map[string]any{"path": path, "parent": parent}, nil)
+	cl, err := jsonCall(http.MethodPost, c.opsPath("mkdir"), nil, map[string]any{"path": path, "parent": parent})
+	if err != nil {
+		return err
+	}
+	cl.once = !parent
+	return c.do(ctx, cl, nil)
 }
 
 // Upload writes data to dir/name. FirecREST rejects files above its
@@ -378,7 +452,16 @@ func (c *Client) Upload(ctx context.Context, dir, name string, data []byte) erro
 	if err := mw.Close(); err != nil {
 		return err
 	}
-	return c.do(ctx, http.MethodPost, c.opsPath("upload"), url.Values{"path": {dir}}, &buf, mw.FormDataContentType(), nil)
+	return c.do(ctx, call{
+		method: http.MethodPost, path: c.opsPath("upload"), query: url.Values{"path": {dir}},
+		body: buf.Bytes(), contentType: mw.FormDataContentType(),
+	}, nil)
+}
+
+// Download returns the content of path. FirecREST rejects files above its
+// max_ops_file_size (5 MiB by default) on this endpoint.
+func (c *Client) Download(ctx context.Context, path string) ([]byte, error) {
+	return c.request(ctx, call{method: http.MethodGet, path: c.opsPath("download"), query: url.Values{"path": {path}}})
 }
 
 // Chmod sets the mode of path; mode is octal, e.g. "755".

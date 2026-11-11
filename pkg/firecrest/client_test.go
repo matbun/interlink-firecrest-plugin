@@ -178,3 +178,26 @@ func TestNewRequiresAuth(t *testing.T) {
 		t.Fatal("expected an error without credentials")
 	}
 }
+
+// Download returns the raw bytes.
+func TestDownload(t *testing.T) {
+	srv, _ := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/filesystem/sys/ops/download" {
+			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
+		}
+		if r.URL.Query().Get("path") != "/scratch/a.bin" {
+			http.Error(w, `{"message":"no such file"}`, http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/octet-stream")
+		w.Write([]byte{0, 0xff, 'x'})
+	})
+	c := newTestClient(t, srv)
+	data, err := c.Download(context.Background(), "/scratch/a.bin")
+	if err != nil || string(data) != "\x00\xffx" {
+		t.Fatalf("download: %q %v", data, err)
+	}
+	if _, err := c.Download(context.Background(), "/scratch/missing"); !IsNotFound(err) {
+		t.Errorf("missing file: %v", err)
+	}
+}
